@@ -1,0 +1,550 @@
+{
+  "users": [
+    {
+      "id": "u-1",
+      "name": "Alice Johnson",
+      "email": "alice@example.com",
+      "role": "Product Owner",
+      "supervisorId": "u-2"
+    },
+    {
+      "id": "u-2",
+      "name": "Brian Lee",
+      "email": "brian@example.com",
+      "role": "Operations Approver",
+      "supervisorId": "u-3"
+    },
+    {
+      "id": "u-3",
+      "name": "Chloe Martinez",
+      "email": "chloe@example.com",
+      "role": "Admin",
+      "supervisorId": null
+    },
+    {
+      "id": "u-4",
+      "name": "Devon Carter",
+      "email": "devon@example.com",
+      "role": "Category Manager",
+      "supervisorId": "u-3"
+    },
+    {
+      "id": "u-5",
+      "name": "Emma Singh",
+      "email": "emma@example.com",
+      "role": "Compliance Approver",
+      "supervisorId": "u-3"
+    },
+    {
+      "id": "u-6",
+      "name": "Farid Hassan",
+      "email": "farid@example.com",
+      "role": "Procurement Ops",
+      "supervisorId": "u-3"
+    },
+    {
+      "id": "u-7",
+      "name": "Grace Kim",
+      "email": "grace@example.com",
+      "role": "Budget Approver",
+      "supervisorId": "u-3"
+    }
+  ],
+  "domains": [
+    {
+      "id": "billpayment",
+      "name": "Bill Payment",
+      "description": "Approval governance for consumer bill payment capabilities.",
+      "subdomains": [
+        {
+          "id": "billpayment-product",
+          "name": "Product Launch",
+          "description": "Launching a new bill payment product or feature.",
+          "flows": [
+            {
+              "id": "flow-bp-product-v1",
+              "name": "Product Launch Flow",
+              "version": "1.1.0",
+              "description": "Standard launch sequence for new bill payment products.",
+              "updatedAt": "2024-06-01T10:00:00.000Z",
+              "definition": {
+                "stages": [
+                  {
+                    "id": "bp-prod-draft",
+                    "status": "draft",
+                    "name": "Draft Requirements",
+                    "description": "Product owner documents the feature narrative and supporting evidence.",
+                    "actor": "Product Owner",
+                    "actorUserId": "u-1",
+                    "notification": {
+                      "subject": "{{flowName}} · {{stageName}} entered",
+                      "body": "Hello {{supervisorName}},\n\n{{actorName}} has moved {{flowName}} within {{domainName}} ({{subdomainName}}) into the {{stageName}} stage.\nPlease review the business case at your earliest convenience.\n\nThanks,\nAgnostic Approval Platform",
+                      "sendToActorSupervisor": true,
+                      "ccActor": true
+                    },
+                    "transitions": [
+                      {
+                        "to": "waiting",
+                        "label": "Submit for triage",
+                        "conditions": [
+                          "Business case attached",
+                          "Risk assessment drafted"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "id": "bp-prod-triage",
+                    "status": "waiting",
+                    "name": "Operations Review",
+                    "description": "Operations approver validates vendor readiness and process compliance.",
+                    "actor": "Operations Approver",
+                    "actorUserId": "u-2",
+                    "notification": {
+                      "subject": "Action needed · {{flowName}} awaiting Operations sign-off",
+                      "body": "Hi {{supervisorName}},\n\n{{actorName}} is reviewing {{flowName}} for {{domainName}} ({{subdomainName}}) in the {{stageName}} stage.\nPlease ensure the team has the necessary support to finalise the review.\n\nRegards,\nAgnostic Approval Platform",
+                      "sendToActorSupervisor": true,
+                      "ccActor": true
+                    },
+                    "transitions": [
+                      {
+                        "to": "approved",
+                        "label": "Approve for launch",
+                        "conditions": [
+                          "Vendor SLA verified",
+                          "Settlement instructions confirmed"
+                        ]
+                      },
+                      {
+                        "to": "reject",
+                        "label": "Reject for rework",
+                        "conditions": [
+                          "Critical documentation missing"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "id": "bp-prod-approved",
+                    "status": "approved",
+                    "name": "Activation",
+                    "description": "Release management schedules launch activities.",
+                    "actor": "Automation Engine",
+                    "transitions": []
+                  },
+                  {
+                    "id": "bp-prod-reject",
+                    "status": "reject",
+                    "name": "Rework Required",
+                    "description": "Requester addresses feedback and reopens draft.",
+                    "actor": "Product Owner",
+                    "actorUserId": "u-1",
+                    "notification": {
+                      "subject": "Rework requested · {{flowName}}",
+                      "body": "Hello {{supervisorName}},\n\n{{actorName}} must rework {{flowName}} for {{domainName}} ({{subdomainName}}) after the {{stageName}} decision.\nKindly support them in addressing the feedback before resubmission.\n\nThanks,\nAgnostic Approval Platform",
+                      "sendToActorSupervisor": true,
+                      "ccActor": true
+                    },
+                    "transitions": [
+                      {
+                        "to": "draft",
+                        "label": "Reopen draft"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "billpayment-category",
+          "name": "Category Expansion",
+          "description": "Adding a new bill payment category or biller.",
+          "flows": [
+            {
+              "id": "flow-bp-category-v1",
+              "name": "Category Expansion Flow",
+              "version": "2.0.0",
+              "description": "Ensures new bill payment categories are fully vetted before launch.",
+              "updatedAt": "2024-06-03T08:30:00.000Z",
+              "definition": {
+                "stages": [
+                  {
+                    "id": "bp-cat-draft",
+                    "status": "draft",
+                    "name": "Draft Category Proposal",
+                    "description": "Requester prepares proposal with forecasted volume and compliance artifacts.",
+                    "actor": "Category Manager",
+                    "actorUserId": "u-4",
+                    "notification": {
+                      "subject": "{{flowName}} proposal drafted",
+                      "body": "Hi {{supervisorName}},\n\n{{actorName}} drafted the {{flowName}} for {{domainName}} ({{subdomainName}}), entering the {{stageName}} stage.\nPlease review the submitted collateral and provide any guidance needed.\n\nRegards,\nAgnostic Approval Platform",
+                      "sendToActorSupervisor": true,
+                      "ccActor": true
+                    },
+                    "transitions": [
+                      {
+                        "to": "waiting",
+                        "label": "Submit to compliance",
+                        "conditions": [
+                          "Volume forecast attached",
+                          "Compliance attestation complete"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "id": "bp-cat-compliance",
+                    "status": "waiting",
+                    "name": "Compliance Review",
+                    "description": "Compliance and risk review new category entrants.",
+                    "actor": "Compliance Approver",
+                    "actorUserId": "u-5",
+                    "notification": {
+                      "subject": "Compliance review in progress · {{flowName}}",
+                      "body": "Hello {{supervisorName}},\n\n{{actorName}} is reviewing the {{flowName}} within {{domainName}} ({{subdomainName}}) at the {{stageName}} stage.\nEnsure compliance checkpoints are completed before final approval.\n\nThanks,\nAgnostic Approval Platform",
+                      "sendToActorSupervisor": true,
+                      "ccActor": true
+                    },
+                    "transitions": [
+                      {
+                        "to": "approved",
+                        "label": "Approve category",
+                        "conditions": [
+                          "Sanctions scan complete",
+                          "Risk score < 75"
+                        ]
+                      },
+                      {
+                        "to": "reject",
+                        "label": "Reject",
+                        "conditions": [
+                          "Sanctions or risk concerns"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "id": "bp-cat-approved",
+                    "status": "approved",
+                    "name": "Ready for Launch",
+                    "description": "Category marked as approved, downstream teams trigger onboarding.",
+                    "actor": "Automation Engine",
+                    "transitions": []
+                  },
+                  {
+                    "id": "bp-cat-reject",
+                    "status": "reject",
+                    "name": "Rejected",
+                    "description": "Requester notified with compliance rationale.",
+                    "actor": "Category Manager",
+                    "actorUserId": "u-4",
+                    "notification": {
+                      "subject": "Follow-up required · {{flowName}} rejected",
+                      "body": "Hi {{supervisorName}},\n\n{{actorName}} received a rejection for {{flowName}} across {{domainName}} ({{subdomainName}}) at the {{stageName}} stage.\nPlease coordinate remediation steps and plan for resubmission if appropriate.\n\nRegards,\nAgnostic Approval Platform",
+                      "sendToActorSupervisor": true,
+                      "ccActor": true
+                    },
+                    "transitions": [
+                      {
+                        "to": "draft",
+                        "label": "Revise proposal"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "procurement",
+      "name": "Procurement",
+      "description": "Vendor onboarding and purchase order approvals.",
+      "subdomains": [
+        {
+          "id": "procurement-vendor",
+          "name": "Vendor Onboarding",
+          "description": "Approvals for onboarding new vendors.",
+          "flows": [
+            {
+              "id": "flow-procurement-vendor-v1",
+              "name": "Vendor Onboarding Flow",
+              "version": "1.3.0",
+              "description": "Orchestrates due diligence for new vendors.",
+              "updatedAt": "2024-05-22T16:45:00.000Z",
+              "definition": {
+                "stages": [
+                  {
+                    "id": "proc-vendor-draft",
+                    "status": "draft",
+                    "name": "Draft Intake",
+                    "description": "Requester submits vendor intake questionnaire.",
+                    "actor": "Business Requester",
+                    "actorUserId": "u-1",
+                    "notification": {
+                      "subject": "Vendor intake drafted · {{flowName}}",
+                      "body": "Hello {{supervisorName}},\n\n{{actorName}} started the {{flowName}} in {{domainName}} ({{subdomainName}}) and moved into the {{stageName}} stage.\nKindly confirm they have everything needed to proceed to sourcing review.\n\nThanks,\nAgnostic Approval Platform",
+                      "sendToActorSupervisor": true,
+                      "ccActor": true
+                    },
+                    "transitions": [
+                      {
+                        "to": "waiting",
+                        "label": "Send to sourcing",
+                        "conditions": [
+                          "Questionnaire complete",
+                          "Supporting docs uploaded"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "id": "proc-vendor-review",
+                    "status": "waiting",
+                    "name": "Sourcing Review",
+                    "description": "Sourcing validates commercial terms and risk.",
+                    "actor": "Sourcing Approver",
+                    "actorUserId": "u-4",
+                    "notification": {
+                      "subject": "Sourcing review underway · {{flowName}}",
+                      "body": "Hi {{supervisorName}},\n\n{{actorName}} is reviewing {{flowName}} within {{domainName}} ({{subdomainName}}) at the {{stageName}} stage.\nPlease ensure risk and contract checks are completed promptly.\n\nRegards,\nAgnostic Approval Platform",
+                      "sendToActorSupervisor": true,
+                      "ccActor": true
+                    },
+                    "transitions": [
+                      {
+                        "to": "approved",
+                        "label": "Approve vendor",
+                        "conditions": [
+                          "Risk score < 60",
+                          "Contract countersigned"
+                        ]
+                      },
+                      {
+                        "to": "reject",
+                        "label": "Reject vendor",
+                        "conditions": [
+                          "Vendor risk too high"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "id": "proc-vendor-approved",
+                    "status": "approved",
+                    "name": "Vendor Activated",
+                    "description": "ERP vendor record created and activated.",
+                    "actor": "Procurement Ops",
+                    "actorUserId": "u-6",
+                    "notification": {
+                      "subject": "{{flowName}} approved · Activation scheduled",
+                      "body": "Hello {{supervisorName}},\n\n{{actorName}} has completed the {{stageName}} stage for {{flowName}} in {{domainName}} ({{subdomainName}}).\nPlease coordinate downstream activation tasks as needed.\n\nThanks,\nAgnostic Approval Platform",
+                      "sendToActorSupervisor": true,
+                      "ccActor": true
+                    },
+                    "transitions": []
+                  },
+                  {
+                    "id": "proc-vendor-reject",
+                    "status": "reject",
+                    "name": "Rejected",
+                    "description": "Vendor onboarding rejected pending remediation.",
+                    "actor": "Business Requester",
+                    "actorUserId": "u-1",
+                    "notification": {
+                      "subject": "Vendor onboarding rejected · {{flowName}}",
+                      "body": "Hi {{supervisorName}},\n\n{{actorName}} received a rejection for {{flowName}} across {{domainName}} ({{subdomainName}}).\nPlease support remediation before the request is resubmitted.\n\nRegards,\nAgnostic Approval Platform",
+                      "sendToActorSupervisor": true,
+                      "ccActor": true
+                    },
+                    "transitions": [
+                      {
+                        "to": "draft",
+                        "label": "Re-open intake"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "procurement-purchase",
+          "name": "Purchase Orders",
+          "description": "Manage purchase order approvals.",
+          "flows": [
+            {
+              "id": "flow-procurement-po-v2",
+              "name": "Purchase Order Flow",
+              "version": "2.4.1",
+              "description": "Approval path for purchase orders by spend level.",
+              "updatedAt": "2024-05-29T09:15:00.000Z",
+              "definition": {
+                "stages": [
+                  {
+                    "id": "proc-po-draft",
+                    "status": "draft",
+                    "name": "Draft Purchase Request",
+                    "description": "Requester drafts PO with cost center and vendor details.",
+                    "actor": "Business Requester",
+                    "actorUserId": "u-1",
+                    "notification": {
+                      "subject": "Purchase request drafted · {{flowName}}",
+                      "body": "Hello {{supervisorName}},\n\n{{actorName}} entered the {{stageName}} stage for {{flowName}} across {{domainName}} ({{subdomainName}}).\nPlease keep an eye on next steps to maintain cycle time.\n\nThanks,\nAgnostic Approval Platform",
+                      "sendToActorSupervisor": true,
+                      "ccActor": true
+                    },
+                    "transitions": [
+                      {
+                        "to": "waiting",
+                        "label": "Submit for approval",
+                        "conditions": [
+                          "Budget owner identified",
+                          "Quote attached"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "id": "proc-po-approval",
+                    "status": "waiting",
+                    "name": "Budget Approval",
+                    "description": "Budget owner reviews spend threshold and policy alignment.",
+                    "actor": "Budget Approver",
+                    "actorUserId": "u-7",
+                    "notification": {
+                      "subject": "Budget approval pending · {{flowName}}",
+                      "body": "Hi {{supervisorName}},\n\n{{actorName}} is assessing {{flowName}} in {{domainName}} ({{subdomainName}}) at the {{stageName}} stage.\nPlease provide support to complete the approval promptly.\n\nRegards,\nAgnostic Approval Platform",
+                      "sendToActorSupervisor": true,
+                      "ccActor": true
+                    },
+                    "transitions": [
+                      {
+                        "to": "approved",
+                        "label": "Approve",
+                        "conditions": [
+                          "Spend within policy",
+                          "Budget available"
+                        ]
+                      },
+                      {
+                        "to": "reject",
+                        "label": "Reject",
+                        "conditions": [
+                          "Budget exceeded",
+                          "Policy violation"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "id": "proc-po-approved",
+                    "status": "approved",
+                    "name": "PO Issued",
+                    "description": "PO issued and procurement notified vendor.",
+                    "actor": "Procurement Ops",
+                    "actorUserId": "u-6",
+                    "notification": {
+                      "subject": "{{flowName}} approved · PO ready",
+                      "body": "Hello {{supervisorName}},\n\n{{actorName}} concluded the {{flowName}} journey for {{domainName}} ({{subdomainName}}) at the {{stageName}} stage.\nPlease oversee fulfilment and vendor communication.\n\nThanks,\nAgnostic Approval Platform",
+                      "sendToActorSupervisor": true,
+                      "ccActor": true
+                    },
+                    "transitions": []
+                  },
+                  {
+                    "id": "proc-po-reject",
+                    "status": "reject",
+                    "name": "Rejected",
+                    "description": "Requester notified to amend spend request.",
+                    "actor": "Business Requester",
+                    "actorUserId": "u-1",
+                    "notification": {
+                      "subject": "Purchase order rejected · {{flowName}}",
+                      "body": "Hi {{supervisorName}},\n\n{{actorName}} received a rejection for {{flowName}} within {{domainName}} ({{subdomainName}}).\nCoordinate updates so the request can re-enter the pipeline if needed.\n\nRegards,\nAgnostic Approval Platform",
+                      "sendToActorSupervisor": true,
+                      "ccActor": true
+                    },
+                    "transitions": [
+                      {
+                        "to": "draft",
+                        "label": "Edit request"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "approvals": [
+    {
+      "id": "a-1",
+      "title": "Launch recurring electricity bill payments",
+      "domainId": "billpayment",
+      "subdomainId": "billpayment-product",
+      "requesterId": "u-1",
+      "status": "waiting",
+      "approverIds": ["u-2"],
+      "submittedAt": "2024-06-04T14:00:00.000Z",
+      "lastUpdatedAt": "2024-06-04T14:00:00.000Z"
+    },
+    {
+      "id": "a-2",
+      "title": "Add municipal taxes category",
+      "domainId": "billpayment",
+      "subdomainId": "billpayment-category",
+      "requesterId": "u-4",
+      "status": "approved",
+      "approverIds": ["u-5"],
+      "submittedAt": "2024-05-15T09:15:00.000Z",
+      "lastUpdatedAt": "2024-05-18T11:40:00.000Z"
+    },
+    {
+      "id": "a-3",
+      "title": "Onboard ACME consulting",
+      "domainId": "procurement",
+      "subdomainId": "procurement-vendor",
+      "requesterId": "u-1",
+      "status": "reject",
+      "approverIds": ["u-4"],
+      "submittedAt": "2024-05-20T07:45:00.000Z",
+      "lastUpdatedAt": "2024-05-21T10:20:00.000Z"
+    },
+    {
+      "id": "a-4",
+      "title": "Office supplies re-order",
+      "domainId": "procurement",
+      "subdomainId": "procurement-purchase",
+      "requesterId": "u-1",
+      "status": "draft",
+      "approverIds": ["u-7"],
+      "submittedAt": "2024-06-05T09:00:00.000Z",
+      "lastUpdatedAt": "2024-06-05T09:00:00.000Z"
+    }
+  ],
+  "logs": [
+    {
+      "id": "lg-1",
+      "timestamp": "2024-06-04T14:05:00.000Z",
+      "level": "info",
+      "message": "Approval a-1 submitted by Alice Johnson",
+      "context": { "approvalId": "a-1", "userId": "u-1" }
+    },
+    {
+      "id": "lg-2",
+      "timestamp": "2024-05-21T10:20:00.000Z",
+      "level": "warning",
+      "message": "Vendor onboarding rejected due to missing SOC report",
+      "context": { "approvalId": "a-3", "userId": "u-4" }
+    }
+  ]
+}
