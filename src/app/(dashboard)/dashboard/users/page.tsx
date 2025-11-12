@@ -4,7 +4,12 @@ import type { ApprovalStatus, User } from "@/types";
 import { StatusBadge } from "@/components/status-badge";
 import { PageHeaderMount } from "@/components/page-header";
 
-const STATUS_ORDER: ApprovalStatus[] = ["draft", "waiting", "approved", "reject"];
+const STATUS_ORDER: ApprovalStatus[] = [
+  "in_process",
+  "approved",
+  "reject",
+  "end",
+];
 
 const ROLE_STYLES: Record<string, string> = {
   "Product Owner": "bg-sky-50 text-sky-700 border-sky-200",
@@ -44,10 +49,10 @@ export default async function UsersPage() {
         return acc;
       },
       {
-        draft: 0,
-        waiting: 0,
+        in_process: 0,
         approved: 0,
         reject: 0,
+        end: 0,
       },
     );
 
@@ -102,7 +107,7 @@ export default async function UsersPage() {
         <StatCard
           title="Approvals awaiting action"
           value={
-            data.approvals.filter((approval) => approval.status === "waiting")
+            data.approvals.filter((approval) => approval.status === "in_process")
               .length
           }
           subtitle="Pending reviewer decisions"

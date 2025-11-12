@@ -12,10 +12,10 @@ export interface FlowPathEvaluation {
 
 function isApprovalStatus(value: unknown): value is ApprovalStatus {
   return (
-    value === "draft" ||
-    value === "waiting" ||
+    value === "in_process" ||
     value === "approved" ||
-    value === "reject"
+    value === "reject" ||
+    value === "end"
   );
 }
 
@@ -67,18 +67,24 @@ export function validateFlowDefinition(
     return false;
   }
 
-  const statusSet = new Set<ApprovalStatus>();
-  for (const stage of stages as ApprovalFlowStage[]) {
-    if (statusSet.has(stage.status)) {
-      return false;
-    }
-    statusSet.add(stage.status);
+  const stageList = stages as ApprovalFlowStage[];
+  const stagesById = new Map<string, ApprovalFlowStage>();
+  const existingStatuses = new Set<ApprovalStatus>();
+  stageList.forEach((stage) => {
+    stagesById.set(stage.id, stage);
+    existingStatuses.add(stage.status);
+  });
+
+  for (const stage of stageList) {
     for (const transition of stage.transitions) {
-      if (!statusSet.has(transition.to)) {
-        // allow forward references but ensure target exists somewhere in stages
-        if (!(stages as ApprovalFlowStage[]).some((s) => s.status === transition.to)) {
+      if (transition.targetStageId) {
+        if (!stagesById.has(transition.targetStageId)) {
           return false;
         }
+        continue;
+      }
+      if (!existingStatuses.has(transition.to)) {
+        return false;
       }
     }
   }
@@ -97,13 +103,33 @@ export function evaluateFlowPath(
     return { isValid: false, issues };
   }
 
-  const stageByStatus = new Map<ApprovalStatus, ApprovalFlowStage>();
+  const stageById = new Map<string, ApprovalFlowStage>();
+  const statusGraph = new Map<ApprovalStatus, Set<ApprovalStatus>>();
+  const knownStatuses = new Set<ApprovalStatus>();
+
   definition.stages.forEach((stage) => {
-    stageByStatus.set(stage.status, stage);
+    stageById.set(stage.id, stage);
+    knownStatuses.add(stage.status);
+  });
+
+  definition.stages.forEach((stage) => {
+    const adjacency =
+      statusGraph.get(stage.status) ?? new Set<ApprovalStatus>();
+    stage.transitions.forEach((transition) => {
+      if (transition.targetStageId) {
+        const targetStage = stageById.get(transition.targetStageId);
+        if (targetStage) {
+          adjacency.add(targetStage.status);
+          return;
+        }
+      }
+      adjacency.add(transition.to);
+    });
+    statusGraph.set(stage.status, adjacency);
   });
 
   const [firstStatus] = path;
-  if (!stageByStatus.has(firstStatus)) {
+  if (!knownStatuses.has(firstStatus)) {
     issues.push(`Stage for status "${firstStatus}" does not exist in flow.`);
   }
 
@@ -111,26 +137,18 @@ export function evaluateFlowPath(
     const prevStatus = path[index - 1];
     const nextStatus = path[index];
 
-    if (!stageByStatus.has(nextStatus)) {
+    if (!knownStatuses.has(nextStatus)) {
       issues.push(`Stage for status "${nextStatus}" does not exist in flow.`);
       continue;
     }
 
-    const prevStage = stageByStatus.get(prevStatus);
-    if (!prevStage) {
-      issues.push(`Stage for status "${prevStatus}" does not exist in flow.`);
-      continue;
-    }
-
-    const hasTransition = prevStage.transitions.some(
-      (transition) => transition.to === nextStatus,
-    );
-
-    if (!hasTransition) {
+    const adjacency = statusGraph.get(prevStatus);
+    if (!adjacency || !adjacency.has(nextStatus)) {
       issues.push(
         `No transition from "${prevStatus}" to "${nextStatus}" in flow.`,
       );
     }
+
   }
 
   return {

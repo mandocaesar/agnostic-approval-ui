@@ -4,20 +4,25 @@ import { StatusBadge } from "@/components/status-badge";
 import type { ApprovalStatus } from "@/types";
 import { PageHeaderMount } from "@/components/page-header";
 
-const STATUS_ORDER: ApprovalStatus[] = ["draft", "waiting", "approved", "reject"];
+const STATUS_ORDER: ApprovalStatus[] = [
+  "in_process",
+  "approved",
+  "reject",
+  "end",
+];
 
 const STATUS_TITLES: Record<ApprovalStatus, string> = {
-  draft: "Draft",
-  waiting: "Waiting for Approval",
+  in_process: "In process",
   approved: "Approved",
-  reject: "Rejected",
+  reject: "Reject",
+  end: "End",
 };
 
 const STATUS_DESCRIPTIONS: Record<ApprovalStatus, string> = {
-  draft: "Requests being authored.",
-  waiting: "Queued for decisioning.",
+  in_process: "Requests actively being worked or reviewed.",
   approved: "Successfully cleared review.",
-  reject: "Declined and require action.",
+  reject: "Declined and requires action or reroute.",
+  end: "Closed out after final decision.",
 };
 
 const dateFormatter = new Intl.DateTimeFormat("en", {
@@ -45,10 +50,10 @@ export default async function ApprovalsPage() {
       return acc;
     },
     {
-      draft: 0,
-      waiting: 0,
-      reject: 0,
+      in_process: 0,
       approved: 0,
+      reject: 0,
+      end: 0,
     },
   );
 
@@ -70,10 +75,10 @@ export default async function ApprovalsPage() {
       return acc;
     },
     {
-      draft: [],
-      waiting: [],
+      in_process: [],
       approved: [],
       reject: [],
+      end: [],
     },
   );
 
@@ -90,7 +95,7 @@ export default async function ApprovalsPage() {
             key={status}
             title={STATUS_DESCRIPTIONS[status]}
             value={statusTotals[status]}
-            subtitle={`Status: ${status.toUpperCase()}`}
+            subtitle={`Status: ${STATUS_TITLES[status].toUpperCase()}`}
           />
         ))}
       </section>

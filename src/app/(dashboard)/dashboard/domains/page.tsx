@@ -5,7 +5,12 @@ import { StatusBadge } from "@/components/status-badge";
 import { buildFlowNotifications } from "@/lib/notificationEngine";
 import { PageHeaderMount } from "@/components/page-header";
 
-const STATUS_ORDER: ApprovalStatus[] = ["draft", "waiting", "approved", "reject"];
+const STATUS_ORDER: ApprovalStatus[] = [
+  "in_process",
+  "approved",
+  "reject",
+  "end",
+];
 
 export default async function DomainsPage() {
   const data = await readData();
@@ -40,10 +45,10 @@ export default async function DomainsPage() {
         return acc;
       },
       {
-        draft: 0,
-        waiting: 0,
+        in_process: 0,
         approved: 0,
         reject: 0,
+        end: 0,
       },
     );
 

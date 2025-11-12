@@ -24,7 +24,21 @@ import {
   type StageNotificationPreview,
 } from "@/lib/notificationEngine";
 
-const FINAL_STATUSES: ApprovalStatus[] = ["approved", "reject"];
+const STATUS_LABELS: Record<ApprovalStatus, string> = {
+  in_process: "In process",
+  approved: "Approved",
+  reject: "Reject",
+  end: "End",
+};
+
+const STATUS_ORDER: ApprovalStatus[] = [
+  "in_process",
+  "approved",
+  "reject",
+  "end",
+];
+
+const FINAL_STATUSES: ApprovalStatus[] = ["approved", "reject", "end"];
 
 interface RuleTesterProps {
   domains: Domain[];
@@ -54,14 +68,14 @@ function getDefaultEndStatus(statuses: ApprovalStatus[]): ApprovalStatus {
 function buildDefaultPathConfig(flow: ApprovalFlow | undefined): PathConfig {
   if (!flow) {
     return {
-      start: "draft",
+      start: "in_process",
       end: "approved",
       transitionsJson: "[\n]",
     };
   }
 
   const statuses = flow.definition.stages.map((stage) => stage.status);
-  const start = statuses[0] ?? "draft";
+  const start = statuses[0] ?? "in_process";
   const end = getDefaultEndStatus(statuses);
   const startIndex = statuses.indexOf(start);
   const endIndex = statuses.lastIndexOf(end);
@@ -124,12 +138,12 @@ export function RuleTester({ domains, users }: RuleTesterProps) {
 
   const allStatuses = useMemo(() => {
     if (!selectedFlow) {
-      return FINAL_STATUSES;
+      return STATUS_ORDER;
     }
     const unique = Array.from(
       new Set(selectedFlow.definition.stages.map((stage) => stage.status)),
     );
-    return unique;
+    return unique.length ? unique : STATUS_ORDER;
   }, [selectedFlow]);
 
   const stageNotificationsById = useMemo(() => {
@@ -165,11 +179,11 @@ export function RuleTester({ domains, users }: RuleTesterProps) {
     : null;
 
   const applyFlowDefaults = (flow: ApprovalFlow | undefined) => {
-    if (!flow) {
-      setDefinitionJson("{\n  \"stages\": []\n}");
-      setStartStatus("draft");
-      setEndStatus("approved");
-      setTransitionsJson("[\n]");
+  if (!flow) {
+    setDefinitionJson("{\n  \"stages\": []\n}");
+    setStartStatus("in_process");
+    setEndStatus("approved");
+    setTransitionsJson("[\n]");
     } else {
       setDefinitionJson(JSON.stringify(flow.definition, null, 2));
       const pathConfig = buildDefaultPathConfig(flow);
@@ -680,8 +694,8 @@ export function RuleTester({ domains, users }: RuleTesterProps) {
               </h4>
               <p className="mt-1 text-xs text-slate-500">
                 Choose a start and end status, then list any intermediate
-                statuses to validate the route. Final states default to Approved
-                or Reject.
+                statuses to validate the route. Approved and End always close
+                the flow, while Reject can optionally terminate a path.
               </p>
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 <div className="flex flex-col gap-2">
@@ -695,11 +709,14 @@ export function RuleTester({ domains, users }: RuleTesterProps) {
                       setStartStatus(event.target.value as ApprovalStatus)
                     }
                   >
-                    {allStatuses.map((status) => (
-                      <option key={`start-${status}`} value={status}>
-                        {status}
-                      </option>
-                    ))}
+                    {allStatuses.map((status) => {
+                      const label = STATUS_LABELS[status] ?? status;
+                      return (
+                        <option key={`start-${status}`} value={status}>
+                          {label}
+                        </option>
+                      );
+                    })}
                   </select>
                 </div>
                 <div className="flex flex-col gap-2">
@@ -713,11 +730,14 @@ export function RuleTester({ domains, users }: RuleTesterProps) {
                       setEndStatus(event.target.value as ApprovalStatus)
                     }
                   >
-                    {FINAL_STATUSES.map((status) => (
-                      <option key={`end-${status}`} value={status}>
-                        {status}
-                      </option>
-                    ))}
+                    {FINAL_STATUSES.map((status) => {
+                      const label = STATUS_LABELS[status] ?? status;
+                      return (
+                        <option key={`end-${status}`} value={status}>
+                          {label}
+                        </option>
+                      );
+                    })}
                   </select>
                 </div>
               </div>

@@ -71,7 +71,7 @@
                 "stages": [
                   {
                     "id": "bp-prod-draft",
-                    "status": "draft",
+                    "status": "in_process",
                     "name": "Draft Requirements",
                     "description": "Product owner documents the feature narrative and supporting evidence.",
                     "actor": "Product Owner",
@@ -84,18 +84,20 @@
                     },
                     "transitions": [
                       {
-                        "to": "waiting",
+                        "to": "in_process",
                         "label": "Submit for triage",
                         "conditions": [
                           "Business case attached",
                           "Risk assessment drafted"
-                        ]
+                        ],
+                        "targetStageId": "bp-prod-triage",
+                        "targetStageName": "Operations Review"
                       }
                     ]
                   },
                   {
                     "id": "bp-prod-triage",
-                    "status": "waiting",
+                    "status": "in_process",
                     "name": "Operations Review",
                     "description": "Operations approver validates vendor readiness and process compliance.",
                     "actor": "Operations Approver",
@@ -113,14 +115,18 @@
                         "conditions": [
                           "Vendor SLA verified",
                           "Settlement instructions confirmed"
-                        ]
+                        ],
+                        "targetStageId": "bp-prod-approved",
+                        "targetStageName": "Activation"
                       },
                       {
                         "to": "reject",
                         "label": "Reject for rework",
                         "conditions": [
                           "Critical documentation missing"
-                        ]
+                        ],
+                        "targetStageId": "bp-prod-reject",
+                        "targetStageName": "Rework Required"
                       }
                     ]
                   },
@@ -147,8 +153,10 @@
                     },
                     "transitions": [
                       {
-                        "to": "draft",
-                        "label": "Reopen draft"
+                        "to": "in_process",
+                        "label": "Reopen draft",
+                        "targetStageId": "bp-prod-draft",
+                        "targetStageName": "Draft Requirements"
                       }
                     ]
                   }
@@ -172,7 +180,7 @@
                 "stages": [
                   {
                     "id": "bp-cat-draft",
-                    "status": "draft",
+                    "status": "in_process",
                     "name": "Draft Category Proposal",
                     "description": "Requester prepares proposal with forecasted volume and compliance artifacts.",
                     "actor": "Category Manager",
@@ -185,18 +193,20 @@
                     },
                     "transitions": [
                       {
-                        "to": "waiting",
+                        "to": "in_process",
                         "label": "Submit to compliance",
                         "conditions": [
                           "Volume forecast attached",
                           "Compliance attestation complete"
-                        ]
+                        ],
+                        "targetStageId": "bp-cat-compliance",
+                        "targetStageName": "Compliance Review"
                       }
                     ]
                   },
                   {
                     "id": "bp-cat-compliance",
-                    "status": "waiting",
+                    "status": "in_process",
                     "name": "Compliance Review",
                     "description": "Compliance and risk review new category entrants.",
                     "actor": "Compliance Approver",
@@ -214,14 +224,18 @@
                         "conditions": [
                           "Sanctions scan complete",
                           "Risk score < 75"
-                        ]
+                        ],
+                        "targetStageId": "bp-cat-approved",
+                        "targetStageName": "Ready for Launch"
                       },
                       {
                         "to": "reject",
                         "label": "Reject",
                         "conditions": [
                           "Sanctions or risk concerns"
-                        ]
+                        ],
+                        "targetStageId": "bp-cat-reject",
+                        "targetStageName": "Rejected"
                       }
                     ]
                   },
@@ -248,8 +262,10 @@
                     },
                     "transitions": [
                       {
-                        "to": "draft",
-                        "label": "Revise proposal"
+                        "to": "in_process",
+                        "label": "Revise proposal",
+                        "targetStageId": "bp-cat-draft",
+                        "targetStageName": "Draft Category Proposal"
                       }
                     ]
                   }
@@ -280,7 +296,7 @@
                 "stages": [
                   {
                     "id": "proc-vendor-draft",
-                    "status": "draft",
+                    "status": "in_process",
                     "name": "Draft Intake",
                     "description": "Requester submits vendor intake questionnaire.",
                     "actor": "Business Requester",
@@ -293,18 +309,20 @@
                     },
                     "transitions": [
                       {
-                        "to": "waiting",
+                        "to": "in_process",
                         "label": "Send to sourcing",
                         "conditions": [
                           "Questionnaire complete",
                           "Supporting docs uploaded"
-                        ]
+                        ],
+                        "targetStageId": "proc-vendor-review",
+                        "targetStageName": "Sourcing Review"
                       }
                     ]
                   },
                   {
                     "id": "proc-vendor-review",
-                    "status": "waiting",
+                    "status": "in_process",
                     "name": "Sourcing Review",
                     "description": "Sourcing validates commercial terms and risk.",
                     "actor": "Sourcing Approver",
@@ -322,14 +340,18 @@
                         "conditions": [
                           "Risk score < 60",
                           "Contract countersigned"
-                        ]
+                        ],
+                        "targetStageId": "proc-vendor-approved",
+                        "targetStageName": "Vendor Activated"
                       },
                       {
                         "to": "reject",
                         "label": "Reject vendor",
                         "conditions": [
                           "Vendor risk too high"
-                        ]
+                        ],
+                        "targetStageId": "proc-vendor-reject",
+                        "targetStageName": "Rejected"
                       }
                     ]
                   },
@@ -363,8 +385,10 @@
                     },
                     "transitions": [
                       {
-                        "to": "draft",
-                        "label": "Re-open intake"
+                        "to": "in_process",
+                        "label": "Re-open intake",
+                        "targetStageId": "proc-vendor-draft",
+                        "targetStageName": "Draft Intake"
                       }
                     ]
                   }
@@ -388,7 +412,7 @@
                 "stages": [
                   {
                     "id": "proc-po-draft",
-                    "status": "draft",
+                    "status": "in_process",
                     "name": "Draft Purchase Request",
                     "description": "Requester drafts PO with cost center and vendor details.",
                     "actor": "Business Requester",
@@ -401,18 +425,20 @@
                     },
                     "transitions": [
                       {
-                        "to": "waiting",
+                        "to": "in_process",
                         "label": "Submit for approval",
                         "conditions": [
                           "Budget owner identified",
                           "Quote attached"
-                        ]
+                        ],
+                        "targetStageId": "proc-po-approval",
+                        "targetStageName": "Budget Approval"
                       }
                     ]
                   },
                   {
                     "id": "proc-po-approval",
-                    "status": "waiting",
+                    "status": "in_process",
                     "name": "Budget Approval",
                     "description": "Budget owner reviews spend threshold and policy alignment.",
                     "actor": "Budget Approver",
@@ -430,7 +456,9 @@
                         "conditions": [
                           "Spend within policy",
                           "Budget available"
-                        ]
+                        ],
+                        "targetStageId": "proc-po-approved",
+                        "targetStageName": "PO Issued"
                       },
                       {
                         "to": "reject",
@@ -438,7 +466,9 @@
                         "conditions": [
                           "Budget exceeded",
                           "Policy violation"
-                        ]
+                        ],
+                        "targetStageId": "proc-po-reject",
+                        "targetStageName": "Rejected"
                       }
                     ]
                   },
@@ -472,8 +502,10 @@
                     },
                     "transitions": [
                       {
-                        "to": "draft",
-                        "label": "Edit request"
+                        "to": "in_process",
+                        "label": "Edit request",
+                        "targetStageId": "proc-po-draft",
+                        "targetStageName": "Draft Purchase Request"
                       }
                     ]
                   }
@@ -492,8 +524,10 @@
       "domainId": "billpayment",
       "subdomainId": "billpayment-product",
       "requesterId": "u-1",
-      "status": "waiting",
-      "approverIds": ["u-2"],
+      "status": "in_process",
+      "approverIds": [
+        "u-2"
+      ],
       "submittedAt": "2024-06-04T14:00:00.000Z",
       "lastUpdatedAt": "2024-06-04T14:00:00.000Z"
     },
@@ -504,7 +538,9 @@
       "subdomainId": "billpayment-category",
       "requesterId": "u-4",
       "status": "approved",
-      "approverIds": ["u-5"],
+      "approverIds": [
+        "u-5"
+      ],
       "submittedAt": "2024-05-15T09:15:00.000Z",
       "lastUpdatedAt": "2024-05-18T11:40:00.000Z"
     },
@@ -515,7 +551,9 @@
       "subdomainId": "procurement-vendor",
       "requesterId": "u-1",
       "status": "reject",
-      "approverIds": ["u-4"],
+      "approverIds": [
+        "u-4"
+      ],
       "submittedAt": "2024-05-20T07:45:00.000Z",
       "lastUpdatedAt": "2024-05-21T10:20:00.000Z"
     },
@@ -525,8 +563,10 @@
       "domainId": "procurement",
       "subdomainId": "procurement-purchase",
       "requesterId": "u-1",
-      "status": "draft",
-      "approverIds": ["u-7"],
+      "status": "in_process",
+      "approverIds": [
+        "u-7"
+      ],
       "submittedAt": "2024-06-05T09:00:00.000Z",
       "lastUpdatedAt": "2024-06-05T09:00:00.000Z"
     }
@@ -537,14 +577,20 @@
       "timestamp": "2024-06-04T14:05:00.000Z",
       "level": "info",
       "message": "Approval a-1 submitted by Alice Johnson",
-      "context": { "approvalId": "a-1", "userId": "u-1" }
+      "context": {
+        "approvalId": "a-1",
+        "userId": "u-1"
+      }
     },
     {
       "id": "lg-2",
       "timestamp": "2024-05-21T10:20:00.000Z",
       "level": "warning",
       "message": "Vendor onboarding rejected due to missing SOC report",
-      "context": { "approvalId": "a-3", "userId": "u-4" }
+      "context": {
+        "approvalId": "a-3",
+        "userId": "u-4"
+      }
     }
   ]
 }

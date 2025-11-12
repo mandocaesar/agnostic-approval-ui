@@ -1,4 +1,4 @@
-export type ApprovalStatus = "draft" | "waiting" | "reject" | "approved";
+export type ApprovalStatus = "in_process" | "approved" | "reject" | "end";
 
 export type UserRole = string;
 
@@ -19,6 +19,9 @@ export interface StageNotificationTemplate {
 
 export interface FlowTransition {
   to: ApprovalStatus;
+  targetStageId?: string;
+  targetStageName?: string;
+  targetStageStatus?: ApprovalStatus;
   label?: string;
   conditions?: string[];
 }

@@ -2,6 +2,7 @@
 
 import {
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -9,19 +10,31 @@ import {
 } from "react";
 import type { ApprovalFlow, ApprovalStatus, Domain, User } from "@/types";
 
-const STATUS_OPTIONS: ApprovalStatus[] = [
-  "draft",
-  "waiting",
-  "approved",
-  "reject",
+const STATUS_OPTIONS: {
+  value: ApprovalStatus;
+  label: string;
+  forceFinal?: boolean;
+}[] = [
+  { value: "in_process", label: "In process" },
+  { value: "approved", label: "Approved", forceFinal: true },
+  { value: "reject", label: "Reject" },
+  { value: "end", label: "End", forceFinal: true },
 ];
-const FINAL_STATUSES: ApprovalStatus[] = ["approved", "reject"];
+
+const STATUS_LABELS = Object.fromEntries(
+  STATUS_OPTIONS.map((option) => [option.value, option.label]),
+) as Record<ApprovalStatus, string>;
+
+const FINAL_STATUSES: ApprovalStatus[] = STATUS_OPTIONS.filter(
+  (option) => option.forceFinal,
+).map((option) => option.value);
 
 const CANVAS_WIDTH = 1200;
 const CANVAS_HEIGHT = 560;
 const CARD_WIDTH = 220;
 const CARD_HEIGHT = 150;
 const CANVAS_PADDING = 48;
+const WORKSPACE_BUFFER = 400;
 
 interface StageDraft {
   id: string;
@@ -41,7 +54,19 @@ interface StageDraft {
 
 interface StageTransitionDraft {
   id: string;
-  to: ApprovalStatus;
+  targetStageId: string | null;
+  targetStageName?: string;
+  targetStageStatus?: ApprovalStatus;
+  label: string;
+  conditions: string;
+}
+
+interface StageTransitionSeed {
+  id: string;
+  targetStatus?: ApprovalStatus | null;
+  targetStageId?: string | null;
+  targetStageName?: string;
+  targetStageStatus?: ApprovalStatus | null;
   label: string;
   conditions: string;
 }
@@ -72,22 +97,26 @@ function createStageId() {
   return `stage-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function getDefaultTargetStatus(current: ApprovalStatus): ApprovalStatus {
-  const alternative = STATUS_OPTIONS.find((status) => status !== current);
-  return alternative ?? current;
-}
-
 function createTransitionDraft(
-  fromStatus: ApprovalStatus,
   overrides: Partial<StageTransitionDraft> = {},
 ): StageTransitionDraft {
   return {
     id: createStageId(),
-    to: getDefaultTargetStatus(fromStatus),
+    targetStageId: null,
+    targetStageName: undefined,
+    targetStageStatus: undefined,
     label: "",
     conditions: "",
     ...overrides,
   };
+}
+
+function isLockedFinalStatus(status: ApprovalStatus) {
+  return FINAL_STATUSES.includes(status);
+}
+
+function isStageFinal(stage: StageDraft) {
+  return isLockedFinalStatus(stage.status) || Boolean(stage.isFinal);
 }
 
 function stagePosition(index: number): { x: number; y: number } {
@@ -110,12 +139,19 @@ function createInitialPreset(users: User[]): BuilderPreset {
   const draftOwner = findUserId(users, /product owner/i);
   const opsLead = findUserId(users, /operations|procurement/i);
   const finalApprover = findUserId(users, /admin|compliance/i);
+  const stageIds = {
+    draft: createStageId(),
+    ops: createStageId(),
+    final: createStageId(),
+  };
 
-  const baseStages: Omit<StageDraft, "position">[] = [
+  const baseStages: (Omit<StageDraft, "position" | "transitions"> & {
+    transitions: StageTransitionSeed[];
+  })[] = [
     {
-      id: createStageId(),
+      id: stageIds.draft,
       name: "Draft business case",
-      status: "draft",
+      status: "in_process",
       description:
         "Capture scope, KPIs, and supporting documents for the requested change.",
       actorUserId: draftOwner,
@@ -125,16 +161,17 @@ function createInitialPreset(users: User[]): BuilderPreset {
       transitions: [
         {
           id: createStageId(),
-          to: "waiting",
+          targetStageId: stageIds.ops,
+          targetStageName: "Operations validation",
           label: "Submit for triage",
           conditions: "Business case attached\nBudget validated",
         },
       ],
     },
     {
-      id: createStageId(),
+      id: stageIds.ops,
       name: "Operations validation",
-      status: "waiting",
+      status: "in_process",
       description:
         "Operations lead verifies vendor readiness, SLAs, and settlement coverage.",
       actorUserId: opsLead,
@@ -144,20 +181,23 @@ function createInitialPreset(users: User[]): BuilderPreset {
       transitions: [
         {
           id: createStageId(),
-          to: "approved",
+          targetStageId: stageIds.final,
+          targetStageName: "Final approval",
           label: "Approve hand-off",
           conditions: "Vendor SLA confirmed\nSettlement runbook updated",
         },
         {
           id: createStageId(),
-          to: "reject",
+          targetStatus: "reject",
+          targetStageName: "Rejected",
+          targetStageStatus: "reject",
           label: "Reject for rework",
           conditions: "Critical documentation missing",
         },
       ],
     },
     {
-      id: createStageId(),
+      id: stageIds.final,
       name: "Final approval",
       status: "approved",
       description:
@@ -170,8 +210,33 @@ function createInitialPreset(users: User[]): BuilderPreset {
     },
   ];
 
+  const statusToStageId = new Map<ApprovalStatus, string>();
+  const stageMetaById = new Map(
+    baseStages.map((stage) => [stage.id, { name: stage.name, status: stage.status }]),
+  );
+  baseStages.forEach((stage) => statusToStageId.set(stage.status, stage.id));
+
   const stages: StageDraft[] = baseStages.map((stage, index) => ({
     ...stage,
+    transitions: stage.transitions.map((transition) => {
+      const explicitTargetId =
+        transition.targetStageId ??
+        (transition.targetStatus
+          ? statusToStageId.get(transition.targetStatus)
+          : null);
+      const targetMeta = explicitTargetId
+        ? stageMetaById.get(explicitTargetId)
+        : null;
+      return createTransitionDraft({
+        id: transition.id,
+        targetStageId: explicitTargetId ?? null,
+        targetStageName: transition.targetStageName ?? targetMeta?.name,
+        targetStageStatus:
+          transition.targetStageStatus ?? targetMeta?.status ?? undefined,
+        label: transition.label,
+        conditions: transition.conditions,
+      });
+    }),
     position: stagePosition(index),
   }));
 
@@ -191,6 +256,13 @@ function buildPresetFromFlow(
   users: User[],
 ): BuilderPreset {
   const fallbackActorId = users[0]?.id ?? "";
+  const statusToStageId = new Map<ApprovalStatus, string>();
+  const stageMetaMap = new Map(
+    context.flow.definition.stages.map((stage) => [stage.id, stage]),
+  );
+  context.flow.definition.stages.forEach((stage) => {
+    statusToStageId.set(stage.status, stage.id);
+  });
   const stageDrafts: StageDraft[] = context.flow.definition.stages.map(
     (stage, index) => {
       return {
@@ -201,13 +273,25 @@ function buildPresetFromFlow(
         actorUserId: stage.actorUserId ?? fallbackActorId,
         notifySupervisor: stage.notification?.sendToActorSupervisor ?? false,
         ccActor: stage.notification?.ccActor ?? false,
-        isFinal: FINAL_STATUSES.includes(stage.status),
-        transitions: (stage.transitions ?? []).map((transition) => ({
-          id: `${stage.id}-${transition.to}-${transition.label ?? "branch"}`,
-          to: transition.to,
-          label: transition.label ?? "",
-          conditions: (transition.conditions ?? []).join("\n"),
-        })),
+        isFinal: isLockedFinalStatus(stage.status),
+        transitions: (stage.transitions ?? []).map((transition) => {
+          const resolvedTargetId =
+            transition.targetStageId ??
+            statusToStageId.get(transition.to) ??
+            null;
+          const targetStage = resolvedTargetId
+            ? stageMetaMap.get(resolvedTargetId)
+            : null;
+          return {
+            id: `${stage.id}-${resolvedTargetId ?? transition.to}-${transition.label ?? "branch"}`,
+            targetStageId: resolvedTargetId,
+            targetStageName:
+              transition.targetStageName ?? targetStage?.name ?? undefined,
+            targetStageStatus: targetStage?.status ?? transition.to,
+            label: transition.label ?? "",
+            conditions: (transition.conditions ?? []).join("\n"),
+          };
+        }),
         position: stagePosition(index),
       };
     },
@@ -276,6 +360,18 @@ export function RuleBuilder({
   const [copied, setCopied] = useState(false);
   const [isStageModalOpen, setIsStageModalOpen] = useState(false);
   const [isJsonModalOpen, setIsJsonModalOpen] = useState(false);
+  const [linkSourceStageId, setLinkSourceStageId] = useState<string | null>(
+    null,
+  );
+  const [jsonRecentlyUpdated, setJsonRecentlyUpdated] = useState(false);
+  const [linkPreview, setLinkPreview] = useState<{
+    sourceStageId: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [canvasPan, setCanvasPan] = useState({ x: 0, y: 0 });
+  const panOriginRef = useRef({ x: 0, y: 0 });
+  const [isSpacePressed, setIsSpacePressed] = useState(false);
   const canvasRef = useRef<HTMLDivElement | null>(null);
 
   const userMap = useMemo(
@@ -294,6 +390,27 @@ export function RuleBuilder({
     [selectedDomain, selectedSubdomainId],
   );
   const subdomainOptions = selectedDomain?.subdomains ?? [];
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.code === "Space") {
+        event.preventDefault();
+        setIsSpacePressed(true);
+      }
+    };
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.code === "Space") {
+        event.preventDefault();
+        setIsSpacePressed(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+    };
+  }, []);
 
   const applyPreset = useCallback(
     (presetToApply: BuilderPreset) => {
@@ -336,7 +453,7 @@ export function RuleBuilder({
                   ? stage.transitions
                   : [
                       ...stage.transitions,
-                      createTransitionDraft(stage.status),
+                      createTransitionDraft(),
                     ],
             }
           : stage,
@@ -363,6 +480,61 @@ export function RuleBuilder({
     );
   };
 
+  const setTransitionTargetStage = (
+    stageId: string,
+    branchId: string,
+    targetStageId: string | null,
+  ) => {
+    setStages((prev) =>
+      prev.map((stage) => {
+        if (stage.id !== stageId) {
+          return stage;
+        }
+        const targetStage = targetStageId
+          ? prev.find((candidate) => candidate.id === targetStageId)
+          : null;
+        return {
+          ...stage,
+          transitions: stage.transitions.map((branch) =>
+            branch.id === branchId
+              ? {
+                  ...branch,
+                  targetStageId,
+                  targetStageName: targetStage?.name,
+                  targetStageStatus: targetStage?.status,
+                }
+              : branch,
+          ),
+        };
+      }),
+    );
+    setJsonRecentlyUpdated(true);
+  };
+
+  const disconnectTransition = (stageId: string, transitionId: string) => {
+    setStages((prev) =>
+      prev.map((stage) => {
+        if (stage.id !== stageId) {
+          return stage;
+        }
+        return {
+          ...stage,
+          transitions: stage.transitions.map((transition) =>
+            transition.id === transitionId
+              ? {
+                  ...transition,
+                  targetStageId: null,
+                  targetStageName: undefined,
+                  targetStageStatus: undefined,
+                }
+              : transition,
+          ),
+        };
+      }),
+    );
+    setJsonRecentlyUpdated(true);
+  };
+
   const removeTransitionBranch = (stageId: string, branchId: string) => {
     setStages((prev) =>
       prev.map((stage) =>
@@ -379,6 +551,9 @@ export function RuleBuilder({
   };
 
   const toggleFinalState = (stage: StageDraft, nextIsFinal: boolean) => {
+    if (isLockedFinalStatus(stage.status)) {
+      return;
+    }
     if (nextIsFinal) {
       handleStageChange(stage.id, {
         isFinal: true,
@@ -390,34 +565,63 @@ export function RuleBuilder({
         transitions:
           stage.transitions.length > 0
             ? stage.transitions
-            : [createTransitionDraft(stage.status)],
+            : [createTransitionDraft()],
       });
     }
   };
 
   const orderedStages = useMemo(() => sortStagesForFlow(stages), [stages]);
-  const stageByStatus = useMemo(() => {
-    const map = new Map<ApprovalStatus, StageDraft>();
-    stages.forEach((stage) => {
-      map.set(stage.status, stage);
-    });
-    return map;
+  const stageById = useMemo(() => {
+    return new Map(stages.map((stage): [string, StageDraft] => [stage.id, stage]));
   }, [stages]);
   const selectedStage =
     stages.find((stage) => stage.id === selectedStageId) ?? stages[0] ?? null;
 
+  const stageBounds = useMemo(() => {
+    return stages.reduce(
+      (acc, stage) => ({
+        maxX: Math.max(acc.maxX, stage.position.x),
+        maxY: Math.max(acc.maxY, stage.position.y),
+      }),
+      { maxX: 0, maxY: 0 },
+    );
+  }, [stages]);
+
   const stagePayload = orderedStages.map((stage) => {
     const actor = userMap[stage.actorUserId];
+    const stageIsFinal = isStageFinal(stage);
     const transitions =
-      stage.isFinal || stage.transitions.length === 0
+      stageIsFinal || stage.transitions.length === 0
         ? []
         : stage.transitions
-            .filter((transition) => Boolean(transition.to))
-            .map((transition) => ({
-              to: transition.to,
-              label: transition.label || undefined,
-              conditions: conditionsToArray(transition.conditions),
-            }));
+            .map((transition) => {
+              if (!transition.targetStageId) {
+                return null;
+              }
+              const targetStage = stageById.get(transition.targetStageId);
+              if (!targetStage) {
+                return null;
+              }
+              return {
+                to: transition.targetStageStatus ?? targetStage.status,
+                targetStageId: targetStage.id,
+                targetStageName:
+                  transition.targetStageName ?? targetStage.name,
+                label: transition.label || undefined,
+                conditions: conditionsToArray(transition.conditions),
+              };
+            })
+            .filter(
+              (
+                transition,
+              ): transition is {
+                to: ApprovalStatus;
+                targetStageId: string;
+                targetStageName: string;
+                label?: string;
+                conditions: string[];
+              } => Boolean(transition),
+            );
 
     const notification =
       stage.notifySupervisor || stage.ccActor
@@ -436,7 +640,7 @@ export function RuleBuilder({
       description: stage.description,
       actor: actor?.role ?? "Process Owner",
       actorUserId: stage.actorUserId,
-      isFinal: stage.isFinal ?? FINAL_STATUSES.includes(stage.status),
+      isFinal: stageIsFinal,
       transitions,
       notification,
     };
@@ -470,7 +674,55 @@ export function RuleBuilder({
     ],
   );
 
+  const workspaceWidth = Math.max(
+    CANVAS_WIDTH + WORKSPACE_BUFFER,
+    stageBounds.maxX + CARD_WIDTH + CANVAS_PADDING + WORKSPACE_BUFFER,
+  );
+  const workspaceHeight = Math.max(
+    CANVAS_HEIGHT + WORKSPACE_BUFFER,
+    stageBounds.maxY + CARD_HEIGHT + CANVAS_PADDING + WORKSPACE_BUFFER,
+  );
+
+  const handlePanStart = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!canvasRef.current) {
+      return;
+    }
+    const isMiddleClick = event.button === 1;
+    if (!isSpacePressed && !isMiddleClick) {
+      return;
+    }
+    event.preventDefault();
+    const pointerId = event.pointerId;
+    const originX = event.clientX - canvasPan.x;
+    const originY = event.clientY - canvasPan.y;
+    panOriginRef.current = { x: originX, y: originY };
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId !== pointerId) {
+        return;
+      }
+      setCanvasPan({
+        x: moveEvent.clientX - panOriginRef.current.x,
+        y: moveEvent.clientY - panOriginRef.current.y,
+      });
+    };
+
+    const handlePointerUp = (upEvent: PointerEvent) => {
+      if (upEvent.pointerId !== pointerId) {
+        return;
+      }
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+  };
+
   const startDragging = (stageId: string, event: ReactPointerEvent) => {
+    if (isSpacePressed) {
+      return;
+    }
     const stage = stages.find((node) => node.id === stageId);
     if (!stage || !canvasRef.current) {
       return;
@@ -479,19 +731,27 @@ export function RuleBuilder({
     event.stopPropagation();
 
     const rect = canvasRef.current.getBoundingClientRect();
-    const offsetX = (event.clientX - rect.left) / zoom - stage.position.x;
-    const offsetY = (event.clientY - rect.top) / zoom - stage.position.y;
+    const offsetX =
+      (event.clientX - rect.left - canvasPan.x) / zoom - stage.position.x;
+    const offsetY =
+      (event.clientY - rect.top - canvasPan.y) / zoom - stage.position.y;
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
       if (!canvasRef.current) {
         return;
       }
       const bounds = canvasRef.current.getBoundingClientRect();
-      const canvasX = (moveEvent.clientX - bounds.left) / zoom - offsetX;
-      const canvasY = (moveEvent.clientY - bounds.top) / zoom - offsetY;
+      const canvasX =
+        (moveEvent.clientX - bounds.left - canvasPan.x) / zoom - offsetX;
+      const canvasY =
+        (moveEvent.clientY - bounds.top - canvasPan.y) / zoom - offsetY;
 
-      const maxX = CANVAS_WIDTH - CARD_WIDTH - CANVAS_PADDING;
-      const maxY = CANVAS_HEIGHT - CARD_HEIGHT - CANVAS_PADDING;
+      const maxX =
+        workspaceWidth - CARD_WIDTH - CANVAS_PADDING + WORKSPACE_BUFFER;
+      const maxY =
+        workspaceHeight - CARD_HEIGHT - CANVAS_PADDING + WORKSPACE_BUFFER;
+      const minX = CANVAS_PADDING;
+      const minY = CANVAS_PADDING;
 
       setStages((prev) =>
         prev.map((node) =>
@@ -499,8 +759,8 @@ export function RuleBuilder({
             ? {
                 ...node,
                 position: {
-                  x: clamp(canvasX, CANVAS_PADDING, maxX),
-                  y: clamp(canvasY, CANVAS_PADDING, maxY),
+                  x: clamp(canvasX, minX, maxX),
+                  y: clamp(canvasY, minY, maxY),
                 },
               }
             : node,
@@ -519,18 +779,34 @@ export function RuleBuilder({
 
   const handleStageChange = (stageId: string, updates: Partial<StageDraft>) => {
     setStages((prev) =>
-      prev.map((stage) =>
-        stage.id === stageId ? { ...stage, ...updates } : stage,
-      ),
+      prev.map((stage) => {
+        if (stage.id !== stageId) {
+          return stage;
+        }
+        const nextStage: StageDraft = { ...stage, ...updates };
+        if (updates.status) {
+          if (isLockedFinalStatus(updates.status)) {
+            nextStage.isFinal = true;
+            nextStage.transitions = [];
+          } else if (
+            isLockedFinalStatus(stage.status) &&
+            !isLockedFinalStatus(updates.status) &&
+            nextStage.transitions.length === 0
+          ) {
+            nextStage.transitions = [createTransitionDraft()];
+          }
+        }
+        return nextStage;
+      }),
     );
   };
 
   const addStage = () => {
     const nextIndex = stages.length;
     const lastStage = orderedStages[orderedStages.length - 1];
-    const status = FINAL_STATUSES.includes(lastStage?.status ?? "draft")
-      ? "waiting"
-      : "approved";
+    const lastStageIsFinal = lastStage ? isStageFinal(lastStage) : false;
+    const status: ApprovalStatus = lastStageIsFinal ? "in_process" : "approved";
+    const statusIsLocked = isLockedFinalStatus(status);
     const newStage: StageDraft = {
       id: createStageId(),
       name: "New stage",
@@ -539,10 +815,8 @@ export function RuleBuilder({
       actorUserId: lastStage?.actorUserId ?? users[0]?.id ?? "",
       notifySupervisor: true,
       ccActor: false,
-      isFinal: FINAL_STATUSES.includes(status),
-      transitions: FINAL_STATUSES.includes(status)
-        ? []
-        : [createTransitionDraft(status)],
+      isFinal: statusIsLocked,
+      transitions: statusIsLocked ? [] : [createTransitionDraft()],
       position: stagePosition(nextIndex),
     };
 
@@ -556,18 +830,52 @@ export function RuleBuilder({
     }
     setStages((prev) => {
       const filtered = prev.filter((stage) => stage.id !== stageId);
-      if (!filtered.some((stage) => stage.id === selectedStageId)) {
-        setSelectedStageId(filtered[filtered.length - 1]?.id ?? "");
+      const cleaned = filtered.map((stage) => ({
+        ...stage,
+        transitions: stage.transitions.filter(
+          (transition) => transition.targetStageId !== stageId,
+        ),
+      }));
+      if (!cleaned.some((stage) => stage.id === selectedStageId)) {
+        setSelectedStageId(cleaned[cleaned.length - 1]?.id ?? "");
       }
-      return filtered;
+      return cleaned;
     });
   };
+
+  useEffect(() => {
+    if (!linkSourceStageId) {
+      return;
+    }
+    const handleKeydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setLinkSourceStageId(null);
+      }
+    };
+    window.addEventListener("keydown", handleKeydown);
+    return () => {
+      window.removeEventListener("keydown", handleKeydown);
+    };
+  }, [linkSourceStageId]);
+
+  useEffect(() => {
+    if (!jsonRecentlyUpdated) {
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      setJsonRecentlyUpdated(false);
+    }, 1500);
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [jsonRecentlyUpdated]);
 
   const resetBuilder = () => {
     applyPreset(currentPreset);
     setCopied(false);
     setIsStageModalOpen(false);
     setIsJsonModalOpen(false);
+    setJsonRecentlyUpdated(false);
   };
 
   const copyJson = async () => {
@@ -580,23 +888,170 @@ export function RuleBuilder({
     }
   };
 
+  const startLinkingFromStage = (stageId: string) => {
+    if (isSpacePressed) {
+      return;
+    }
+    const stage = stages.find((node) => node.id === stageId);
+    if (!stage || isStageFinal(stage)) {
+      return;
+    }
+    setLinkSourceStageId(stageId);
+  };
+
+  const startLinkDrag = (stageId: string, event: ReactPointerEvent) => {
+    if (isSpacePressed) {
+      return;
+    }
+    const stage = stages.find((node) => node.id === stageId);
+    if (!stage || isStageFinal(stage) || !canvasRef.current) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    setLinkSourceStageId(stageId);
+
+    const updatePreview = (clientX: number, clientY: number) => {
+      if (!canvasRef.current) {
+        return;
+      }
+      const rect = canvasRef.current.getBoundingClientRect();
+      setLinkPreview({
+        sourceStageId: stageId,
+        x: (clientX - rect.left - canvasPan.x) / zoom,
+        y: (clientY - rect.top - canvasPan.y) / zoom,
+      });
+    };
+
+    updatePreview(event.clientX, event.clientY);
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      updatePreview(moveEvent.clientX, moveEvent.clientY);
+    };
+
+    const handlePointerUp = (upEvent: PointerEvent) => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      setLinkPreview(null);
+      const targetStageElement = (upEvent.target as HTMLElement | null)?.closest(
+        "[data-stage-id]",
+      ) as HTMLElement | null;
+      const targetStageId = targetStageElement?.dataset.stageId;
+      if (targetStageId) {
+        connectStages(stageId, targetStageId);
+      } else {
+        setLinkSourceStageId(null);
+      }
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+  };
+
+  const connectStages = (sourceStageId: string, targetStageId: string) => {
+    let didConnect = false;
+    setStages((prev) => {
+      const sourceStage = prev.find((stage) => stage.id === sourceStageId);
+      const targetStage = prev.find((stage) => stage.id === targetStageId);
+      if (
+        !sourceStage ||
+        !targetStage ||
+        sourceStage.id === targetStage.id ||
+        isStageFinal(sourceStage)
+      ) {
+        return prev;
+      }
+
+      const updatedStages = prev.map((stage) => {
+        if (stage.id !== sourceStageId) {
+          return stage;
+        }
+        let transitions = stage.transitions.map((transition) => ({
+          ...transition,
+        }));
+        if (
+          transitions.some(
+            (transition) => transition.targetStageId === targetStageId,
+          )
+        ) {
+          didConnect = true;
+          return {
+            ...stage,
+            transitions,
+          };
+        }
+
+        const emptyTransition = transitions.find(
+          (transition) => !transition.targetStageId,
+        );
+        if (emptyTransition) {
+          emptyTransition.targetStageId = targetStageId;
+          emptyTransition.targetStageName = targetStage?.name;
+          emptyTransition.targetStageStatus = targetStage?.status;
+          emptyTransition.label =
+            emptyTransition.label || `Route to ${targetStage.name}`;
+          didConnect = true;
+          return {
+            ...stage,
+            transitions,
+          };
+        }
+
+        if (transitions.length >= 2) {
+          return stage;
+        }
+
+        transitions = [
+          ...transitions,
+          createTransitionDraft({
+            targetStageId: targetStageId,
+            targetStageName: targetStage?.name,
+            targetStageStatus: targetStage?.status,
+            label: `Route to ${targetStage.name}`,
+          }),
+        ];
+        didConnect = true;
+        return {
+          ...stage,
+          transitions,
+        };
+      });
+
+      return updatedStages;
+    });
+
+    if (didConnect) {
+      setSelectedStageId(sourceStageId);
+      setJsonRecentlyUpdated(true);
+      setLinkSourceStageId(null);
+    }
+  };
+
   const connectors = useMemo(() => {
     const lines: {
       id: string;
+      transitionId: string;
+      sourceStageId: string;
       start: { x: number; y: number };
       end: { x: number; y: number };
     }[] = [];
     stages.forEach((stage) => {
-      if (stage.isFinal) {
+      const stageIsFinal = isStageFinal(stage);
+      if (stageIsFinal) {
         return;
       }
       stage.transitions.forEach((transition) => {
-        const target = stageByStatus.get(transition.to);
+        if (!transition.targetStageId) {
+          return;
+        }
+        const target = stageById.get(transition.targetStageId);
         if (!target) {
           return;
         }
         lines.push({
           id: `${stage.id}-${transition.id}`,
+          transitionId: transition.id,
+          sourceStageId: stage.id,
           start: {
             x: stage.position.x + CARD_WIDTH,
             y: stage.position.y + CARD_HEIGHT / 2,
@@ -609,7 +1064,20 @@ export function RuleBuilder({
       });
     });
     return lines;
-  }, [stageByStatus, stages]);
+  }, [stageById, stages]);
+
+  const handleStageCardClick = (stageId: string) => {
+    if (linkSourceStageId) {
+      connectStages(linkSourceStageId, stageId);
+      return;
+    }
+    setSelectedStageId(stageId);
+  };
+
+  const handleStageCardDoubleClick = (stageId: string) => {
+    setSelectedStageId(stageId);
+    setIsStageModalOpen(true);
+  };
 
   return (
     <section className="flex flex-col gap-6 bg-white p-6 shadow-sm">
@@ -638,6 +1106,11 @@ export function RuleBuilder({
           >
             View JSON
           </button>
+          {jsonRecentlyUpdated ? (
+            <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-emerald-700">
+              JSON updated
+            </span>
+          ) : null}
         </div>
       </header>
 
@@ -735,57 +1208,116 @@ export function RuleBuilder({
               >
                 Stage editor
               </button>
+              {linkSourceStageId ? (
+                <div className="inline-flex items-center gap-2 rounded-full border border-amber-200 bg-white px-4 py-2 text-xs font-semibold uppercase tracking-wide text-amber-700 shadow-sm">
+                  <span>
+                    Linking from{" "}
+                    {
+                      stages.find((stage) => stage.id === linkSourceStageId)
+                        ?.name
+                    }
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setLinkSourceStageId(null)}
+                    className="text-slate-500 hover:text-slate-900"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : null}
             </div>
+            <p className="mt-3 text-xs text-slate-500">
+              Tip: drag the ● handle on a node to connect it to another node,
+              double-click a dashed connector to unlink, and hold Space + drag
+              anywhere on the canvas to pan when you need extra room.
+            </p>
           </div>
 
           <div
             ref={canvasRef}
+            onPointerDown={handlePanStart}
             className="relative h-[560px] w-full overflow-hidden border border-slate-900/40 bg-slate-950 text-white shadow-inner"
           >
             <div
-              className="absolute inset-0 opacity-60"
+              className="absolute left-0 top-0"
               style={{
-                backgroundImage:
-                  "radial-gradient(circle at 1px 1px, rgba(148,163,184,0.35) 1px, transparent 0)",
-                backgroundSize: "32px 32px",
-              }}
-            />
-            <div
-              className="absolute inset-0"
-              style={{
-                width: CANVAS_WIDTH,
-                height: CANVAS_HEIGHT,
-                transform: `scale(${zoom})`,
+                width: workspaceWidth,
+                height: workspaceHeight,
+                transform: `translate(${canvasPan.x}px, ${canvasPan.y}px) scale(${zoom})`,
                 transformOrigin: "top left",
               }}
             >
-              <svg
-                width={CANVAS_WIDTH}
-                height={CANVAS_HEIGHT}
-                className="pointer-events-none absolute inset-0"
-              >
-                {connectors.map((connector) => (
-                  <line
-                    key={connector.id}
-                    x1={connector.start.x}
-                    y1={connector.start.y}
-                    x2={connector.end.x}
-                    y2={connector.end.y}
-                    stroke="rgba(16, 185, 129, 0.6)"
-                    strokeWidth={3}
-                    strokeLinecap="round"
-                    strokeDasharray="6 6"
-                  />
-                ))}
-              </svg>
-              {stages.map((stage) => {
-                const isSelected = selectedStageId === stage.id;
-                const actor = userMap[stage.actorUserId];
-                const isFinal =
-                  stage.isFinal ?? FINAL_STATUSES.includes(stage.status);
+              <div
+                className="absolute inset-0 opacity-60"
+                style={{
+                  backgroundImage:
+                    "radial-gradient(circle at 1px 1px, rgba(148,163,184,0.35) 1px, transparent 0)",
+                  backgroundSize: "32px 32px",
+                  pointerEvents: "none",
+                }}
+              />
+              <div className="absolute inset-0">
+                <svg
+                  width={workspaceWidth}
+                  height={workspaceHeight}
+                  className="absolute inset-0"
+                >
+                  {connectors.map((connector) => (
+                    <line
+                      key={connector.id}
+                      x1={connector.start.x}
+                      y1={connector.start.y}
+                      x2={connector.end.x}
+                      y2={connector.end.y}
+                      stroke="rgba(16, 185, 129, 0.6)"
+                      strokeWidth={3}
+                      strokeLinecap="round"
+                      strokeDasharray="6 6"
+                      pointerEvents="stroke"
+                      className="cursor-pointer transition hover:stroke-emerald-300"
+                      onDoubleClick={() =>
+                        disconnectTransition(
+                          connector.sourceStageId,
+                          connector.transitionId,
+                        )
+                      }
+                    />
+                  ))}
+                  {linkPreview && stageById.has(linkPreview.sourceStageId) ? (
+                    <line
+                      x1={
+                        (stageById.get(linkPreview.sourceStageId)?.position.x ?? 0) +
+                        CARD_WIDTH
+                      }
+                      y1={
+                        (stageById.get(linkPreview.sourceStageId)?.position.y ?? 0) +
+                        CARD_HEIGHT / 2
+                      }
+                      x2={linkPreview.x}
+                      y2={linkPreview.y}
+                      stroke="rgba(248, 250, 252, 0.7)"
+                      strokeWidth={3}
+                      strokeLinecap="round"
+                      strokeDasharray="4 4"
+                      pointerEvents="none"
+                    />
+                  ) : null}
+                </svg>
+                {stages.map((stage) => {
+                  const isSelected = selectedStageId === stage.id;
+                  const actor = userMap[stage.actorUserId];
+                  const isFinal = isStageFinal(stage);
+                  const statusLabel = STATUS_LABELS[stage.status] ?? stage.status;
+                  const isLinkSource = linkSourceStageId === stage.id;
+                const isLinkTargetCandidate =
+                  Boolean(linkSourceStageId) &&
+                  linkSourceStageId !== stage.id &&
+                  !isLinkSource;
                 return (
                   <div
                     key={stage.id}
+                    data-stage-id={stage.id}
                     style={{
                       position: "absolute",
                       left: stage.position.x,
@@ -795,22 +1327,77 @@ export function RuleBuilder({
                   >
                     <button
                       type="button"
-                      onClick={() => setSelectedStageId(stage.id)}
+                      onClick={() => handleStageCardClick(stage.id)}
+                      onDoubleClick={(event) => {
+                        event.preventDefault();
+                        handleStageCardDoubleClick(stage.id);
+                      }}
                       className={[
                         "group flex h-[150px] flex-col gap-2 rounded-2xl border px-4 py-3 text-left shadow-xl transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300",
                         isSelected
                           ? "border-emerald-400 bg-emerald-400/10"
                           : "border-white/20 bg-white/5 hover:border-emerald-200/70",
+                        isLinkSource
+                          ? "ring-2 ring-amber-300 border-amber-200/80"
+                          : "",
+                        isLinkTargetCandidate
+                          ? "border-emerald-300/70"
+                          : "",
                       ].join(" ")}
                     >
                       <div className="flex items-center justify-between text-[10px] font-semibold uppercase tracking-wide text-slate-300">
-                        <span>{isFinal ? "Final stage" : stage.status}</span>
-                        <span
-                          className="cursor-grab rounded-full border border-white/20 bg-white/10 px-2 py-0.5 text-[9px] text-slate-200 active:cursor-grabbing"
-                          onPointerDown={(event) => startDragging(stage.id, event)}
-                        >
-                          Drag
+                        <span>
+                          {statusLabel}
+                          {isFinal ? " · Final" : ""}
                         </span>
+                        <div className="flex items-center gap-1">
+                          <span
+                            role="button"
+                            tabIndex={isFinal ? -1 : 0}
+                            aria-disabled={isFinal}
+                            title="Drag to connect"
+                            onPointerDown={(event) => {
+                              if (isFinal) {
+                                return;
+                              }
+                              startLinkDrag(stage.id, event);
+                            }}
+                            onClick={(event) => {
+                              if (isFinal) {
+                                return;
+                              }
+                              event.stopPropagation();
+                              startLinkingFromStage(stage.id);
+                            }}
+                            onKeyDown={(event) => {
+                              if (
+                                isFinal ||
+                                (event.key !== "Enter" && event.key !== " ")
+                              ) {
+                                return;
+                              }
+                              event.preventDefault();
+                              startLinkingFromStage(stage.id);
+                            }}
+                            className={[
+                              "flex h-5 w-5 cursor-pointer items-center justify-center rounded-full border text-white transition focus:outline-none focus:ring-2 focus:ring-emerald-300",
+                              isLinkSource
+                                ? "border-emerald-300 bg-emerald-400"
+                                : "border-white/30 bg-white/15 hover:bg-white/30",
+                              isFinal ? "pointer-events-none opacity-50" : "",
+                            ].join(" ")}
+                          >
+                            <span className="text-[9px] font-black leading-none">
+                              ●
+                            </span>
+                          </span>
+                          <span
+                            className="cursor-grab rounded-full border border-white/20 bg-white/10 px-2 py-0.5 text-[9px] text-slate-200 active:cursor-grabbing"
+                            onPointerDown={(event) => startDragging(stage.id, event)}
+                          >
+                            Drag
+                          </span>
+                        </div>
                       </div>
                       <div>
                         <p className="text-base font-semibold text-white">
@@ -832,7 +1419,8 @@ export function RuleBuilder({
                     </button>
                   </div>
                 );
-              })}
+                })}
+              </div>
             </div>
           </div>
         </div>
@@ -868,9 +1456,10 @@ export function RuleBuilder({
             <div className="grid gap-6 p-6 lg:grid-cols-2">
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                 {selectedStage ? (() => {
-                  const stageIsFinal =
-                    selectedStage.isFinal ??
-                    FINAL_STATUSES.includes(selectedStage.status);
+                  const stageIsFinal = isStageFinal(selectedStage);
+                  const statusLockedFinal = isLockedFinalStatus(
+                    selectedStage.status,
+                  );
                   return (
                     <div className="space-y-4 text-sm text-slate-700">
                       <div className="grid gap-3 sm:grid-cols-2">
@@ -898,9 +1487,9 @@ export function RuleBuilder({
                           }
                           className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
                         >
-                          {STATUS_OPTIONS.map((status) => (
-                            <option key={status} value={status}>
-                              {status}
+                          {STATUS_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
                             </option>
                           ))}
                         </select>
@@ -943,16 +1532,24 @@ export function RuleBuilder({
                         <input
                           type="checkbox"
                           checked={stageIsFinal}
+                          disabled={statusLockedFinal}
                           onChange={(event) =>
                             toggleFinalState(selectedStage, event.target.checked)
                           }
-                          className="h-4 w-4 rounded border border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                          className="h-4 w-4 rounded border border-slate-300 text-emerald-600 focus:ring-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
                         />
                       </label>
-                      <p className="mt-1 text-[11px] font-normal text-slate-500">
-                        Final states complete the flow and cannot branch to other
-                        statuses.
-                      </p>
+                      {statusLockedFinal ? (
+                        <p className="mt-1 text-[11px] font-normal text-slate-500">
+                          Approved and End nodes always complete the flow and cannot
+                          branch forward.
+                        </p>
+                      ) : (
+                        <p className="mt-1 text-[11px] font-normal text-slate-500">
+                          Final states complete the flow and cannot branch to other
+                          statuses.
+                        </p>
+                      )}
                     </div>
                     <div className="rounded-2xl border border-slate-200 bg-white/80 p-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1001,21 +1598,32 @@ export function RuleBuilder({
                                 </button>
                               </div>
                               <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                                Target status
+                                Destination stage
                                 <select
-                                  value={branch.to}
+                                  value={branch.targetStageId ?? ""}
                                   onChange={(event) =>
-                                    updateTransitionBranch(selectedStage.id, branch.id, {
-                                      to: event.target.value as ApprovalStatus,
-                                    })
+                                    setTransitionTargetStage(
+                                      selectedStage.id,
+                                      branch.id,
+                                      event.target.value || null,
+                                    )
                                   }
                                   className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
                                 >
-                                  {STATUS_OPTIONS.map((status) => (
-                                    <option key={`${branch.id}-${status}`} value={status}>
-                                      {status}
-                                    </option>
-                                  ))}
+                                  <option value="">Select destination</option>
+                                  {stages
+                                    .filter((candidate) => candidate.id !== selectedStage.id)
+                                    .map((candidate) => {
+                                      const candidateIsFinal = isStageFinal(candidate);
+                                      const candidateStatusLabel =
+                                        STATUS_LABELS[candidate.status] ?? candidate.status;
+                                      return (
+                                        <option key={`${branch.id}-${candidate.id}`} value={candidate.id}>
+                                          {candidate.name} · {candidateStatusLabel}
+                                          {candidateIsFinal ? " (final)" : ""} · {candidate.id}
+                                        </option>
+                                      );
+                                    })}
                                 </select>
                               </label>
                               <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
@@ -1103,8 +1711,8 @@ export function RuleBuilder({
                 <ul className="mt-4 space-y-3 text-sm">
                   {orderedStages.map((stage, index) => {
                     const isActive = selectedStageId === stage.id;
-                    const isFinal =
-                      stage.isFinal ?? FINAL_STATUSES.includes(stage.status);
+                    const isFinal = isStageFinal(stage);
+                    const statusLabel = STATUS_LABELS[stage.status] ?? stage.status;
                     return (
                       <li key={stage.id}>
                         <button
@@ -1120,7 +1728,7 @@ export function RuleBuilder({
                           <div className="flex items-center justify-between text-xs uppercase tracking-wide text-slate-500">
                             <span>Stage {index + 1}</span>
                             <span className="flex items-center gap-2">
-                              {stage.status}
+                              {statusLabel}
                               {isFinal ? (
                                 <span className="rounded-full border border-emerald-200 px-2 py-0.5 text-[10px] font-semibold text-emerald-600">
                                   Final
