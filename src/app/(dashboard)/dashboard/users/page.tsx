@@ -1,4 +1,4 @@
-import { readData } from "@/lib/dataStore";
+import { prisma } from "@/lib/prisma";
 import { StatCard } from "@/components/stat-card";
 import type { ApprovalStatus, User } from "@/types";
 import { StatusBadge } from "@/components/status-badge";
@@ -24,14 +24,35 @@ const ROLE_STYLES: Record<string, string> = {
 const DEFAULT_ROLE_STYLE =
   "bg-slate-200 text-slate-700 border-slate-200";
 
-export default async function UsersPage() {
-  const data = await readData();
-  const usersById = Object.fromEntries(data.users.map((user) => [user.id, user]));
+const ITEMS_PER_PAGE = 5;
+
+export default async function UsersPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string }>;
+}) {
+  const { page: pageParam } = await searchParams;
+  const currentPage = Math.max(1, parseInt(pageParam || "1", 10));
+
+  // Fetch data from database
+  const [users, approvals, domains, totalUsers] = await Promise.all([
+    prisma.user.findMany({
+      skip: (currentPage - 1) * ITEMS_PER_PAGE,
+      take: ITEMS_PER_PAGE,
+    }),
+    prisma.approval.findMany(),
+    prisma.domain.findMany({
+      include: { subdomains: true },
+    }),
+    prisma.user.count(),
+  ]);
+  
+  const usersById = Object.fromEntries(users.map((user) => [user.id, user]));
   const domainMap = Object.fromEntries(
-    data.domains.map((domain) => [domain.id, domain.name]),
+    domains.map((domain) => [domain.id, domain.name]),
   );
   const subdomainMap = Object.fromEntries(
-    data.domains.flatMap((domain) =>
+    domains.flatMap((domain) =>
       domain.subdomains.map((subdomain) => [
         subdomain.id,
         `${domain.name} · ${subdomain.name}`,
@@ -39,47 +60,42 @@ export default async function UsersPage() {
     ),
   );
 
-  const userDetails = data.users.map((user) => {
-    const requested = data.approvals.filter(
+  const userDetails = users.map((user) => {
+    const requested = approvals.filter(
       (approval) => approval.requesterId === user.id,
     );
-    const approvalsByStatus = requested.reduce<Record<ApprovalStatus, number>>(
-      (acc, approval) => {
-        acc[approval.status] += 1;
-        return acc;
-      },
-      {
-        in_process: 0,
-        approved: 0,
-        reject: 0,
-        end: 0,
-      },
+    
+    // Get last active timestamp from most recent submission or approval
+    const userApprovals = approvals.filter(
+      (approval) => approval.requesterId === user.id || approval.approverIds.includes(user.id)
+    );
+    const lastActive = userApprovals.length > 0
+      ? new Date(Math.max(...userApprovals.map(a => new Date(a.lastUpdatedAt).getTime())))
+      : null;
+
+    // Get unique domains and subdomains from user's approvals
+    const userDomainSubdomains = new Set(
+      userApprovals.map(approval => ({
+        domain: domainMap[approval.domainId] || "Unknown",
+        subdomain: subdomainMap[approval.subdomainId] || "Unknown",
+      }))
     );
 
-    const approvalsToReview = data.approvals.filter((approval) =>
-      approval.approverIds.includes(user.id),
-    );
-
-    const domainCoverage = new Set(
-      approvalsToReview.map(
-        (approval) =>
-          subdomainMap[approval.subdomainId] ??
-          domainMap[approval.domainId] ??
-          approval.subdomainId,
-      ),
-    );
     const supervisor =
       user.supervisorId ? usersById[user.supervisorId] : undefined;
 
     return {
       ...user,
-      requested,
-      approvalsByStatus,
-      approvalsToReview,
-      domainCoverage,
+      requestedCount: requested.length,
+      lastActive,
+      domainSubdomains: Array.from(userDomainSubdomains),
       supervisor,
     };
   });
+
+  const totalPages = Math.ceil(totalUsers / ITEMS_PER_PAGE);
+  const hasNextPage = currentPage < totalPages;
+  const hasPrevPage = currentPage > 1;
 
   return (
     <>
@@ -91,23 +107,23 @@ export default async function UsersPage() {
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <StatCard
           title="Active users"
-          value={data.users.length}
+          value={users.length}
           subtitle="Collaborators across roles"
         />
         <StatCard
           title="Total approvals requested"
-          value={data.approvals.length}
+          value={approvals.length}
           subtitle="Volume initiated by requesters"
         />
         <StatCard
           title="Average approvals per approver"
-          value={computeAverageApprovalsPerApprover(data.users, data.approvals)}
+          value={computeAverageApprovalsPerApprover(users, approvals)}
           subtitle="Workload distribution"
         />
         <StatCard
           title="Approvals awaiting action"
           value={
-            data.approvals.filter((approval) => approval.status === "in_process")
+            approvals.filter((approval) => approval.status === "in_process")
               .length
           }
           subtitle="Pending reviewer decisions"
@@ -115,23 +131,15 @@ export default async function UsersPage() {
       </section>
 
       <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
-        <header className="border-b border-slate-100 px-6 py-5">
-          <h2 className="text-lg font-semibold text-slate-900">
-            User roster
-          </h2>
-          <p className="text-sm text-slate-500">
-            Roles, load, and approval coverage for each teammate.
-          </p>
-        </header>
         <div className="overflow-x-auto">
           <table className="min-w-full divide-y divide-slate-100 text-left text-sm">
             <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
               <tr>
                 <th className="px-6 py-3 font-semibold">User</th>
                 <th className="px-6 py-3 font-semibold">Role</th>
+                <th className="px-6 py-3 font-semibold">Domains</th>
                 <th className="px-6 py-3 font-semibold">Requests submitted</th>
-                <th className="px-6 py-3 font-semibold">Approvals to review</th>
-                <th className="px-6 py-3 font-semibold">Domain coverage</th>
+                <th className="px-6 py-3 font-semibold">Last active</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -154,54 +162,118 @@ export default async function UsersPage() {
                     </span>
                   </td>
                   <td className="px-6 py-4">
-                    <div className="flex flex-col gap-2">
-                      {STATUS_ORDER.map((status) => (
-                        <div
-                          key={`${user.id}-submissions-${status}`}
-                          className="flex items-center gap-2"
-                        >
-                          <StatusBadge status={status} />
-                          <span className="text-sm font-semibold text-slate-600">
-                            {user.approvalsByStatus[status]}
+                    {user.domainSubdomains.length > 0 ? (
+                      <div className="flex flex-wrap gap-1.5">
+                        {user.domainSubdomains.map((item, idx) => (
+                          <span
+                            key={idx}
+                            className="inline-flex items-center rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 ring-1 ring-inset ring-blue-700/10"
+                          >
+                            {item.subdomain}
                           </span>
-                        </div>
-                      ))}
-                    </div>
-                  </td>
-                  <td className="px-6 py-4 text-sm text-slate-700">
-                    {user.approvalsToReview.length > 0 ? (
-                      <>
-                        <div className="font-semibold text-slate-800">
-                          {user.approvalsToReview.length} assigned
-                        </div>
-                        <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-slate-500">
-                          {user.approvalsToReview.slice(0, 3).map((approval) => (
-                            <li key={approval.id}>{approval.title}</li>
-                          ))}
-                          {user.approvalsToReview.length > 3 ? (
-                            <li>+ more</li>
-                          ) : null}
-                        </ul>
-                      </>
+                        ))}
+                      </div>
                     ) : (
-                      <span className="text-sm text-slate-500">
-                        None assigned
-                      </span>
+                      <span className="text-sm text-slate-400">No domains</span>
                     )}
                   </td>
-                  <td className="px-6 py-4 text-sm text-slate-700">
-                    {user.domainCoverage.size > 0 ? (
-                      Array.from(user.domainCoverage).join(", ")
+                  <td className="px-6 py-4">
+                    <div className="text-2xl font-bold text-slate-900">
+                      {user.requestedCount}
+                    </div>
+                  </td>
+                  <td className="px-6 py-4">
+                    {user.lastActive ? (
+                      <div className="text-sm text-slate-700">
+                        {new Date(user.lastActive).toLocaleDateString("en", {
+                          month: "short",
+                          day: "numeric",
+                          year: "numeric",
+                        })}
+                        <div className="text-xs text-slate-500">
+                          {new Date(user.lastActive).toLocaleTimeString("en", {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </div>
+                      </div>
                     ) : (
-                      <span className="text-sm text-slate-500">
-                        — no reviewer coverage —
-                      </span>
+                      <span className="text-sm text-slate-400">No activity</span>
                     )}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+        </div>
+        
+        {/* Pagination Footer */}
+        <div className="border-t border-slate-100 bg-slate-50 px-6 py-4">
+          <div className="flex items-center justify-between">
+            <div className="text-sm text-slate-600">
+              Showing <span className="font-semibold">{(currentPage - 1) * ITEMS_PER_PAGE + 1}</span> to{" "}
+              <span className="font-semibold">{Math.min(currentPage * ITEMS_PER_PAGE, totalUsers)}</span> of{" "}
+              <span className="font-semibold">{totalUsers}</span> users
+            </div>
+            <div className="flex items-center gap-2">
+              <a
+                href={`/dashboard/users?page=${currentPage - 1}`}
+                className={`inline-flex items-center gap-1 rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                  hasPrevPage
+                    ? "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                    : "border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed pointer-events-none"
+                }`}
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                </svg>
+                Previous
+              </a>
+              
+              <div className="flex items-center gap-1">
+                {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                  let pageNum;
+                  if (totalPages <= 5) {
+                    pageNum = i + 1;
+                  } else if (currentPage <= 3) {
+                    pageNum = i + 1;
+                  } else if (currentPage >= totalPages - 2) {
+                    pageNum = totalPages - 4 + i;
+                  } else {
+                    pageNum = currentPage - 2 + i;
+                  }
+                  
+                  return (
+                    <a
+                      key={pageNum}
+                      href={`/dashboard/users?page=${pageNum}`}
+                      className={`inline-flex h-9 w-9 items-center justify-center rounded-lg border text-sm font-medium transition-colors ${
+                        pageNum === currentPage
+                          ? "border-blue-500 bg-blue-50 text-blue-700"
+                          : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                      }`}
+                    >
+                      {pageNum}
+                    </a>
+                  );
+                })}
+              </div>
+
+              <a
+                href={`/dashboard/users?page=${currentPage + 1}`}
+                className={`inline-flex items-center gap-1 rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                  hasNextPage
+                    ? "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                    : "border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed pointer-events-none"
+                }`}
+              >
+                Next
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+              </a>
+            </div>
+          </div>
         </div>
       </section>
     </>

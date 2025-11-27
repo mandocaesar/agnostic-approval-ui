@@ -1,4 +1,4 @@
-import { readData } from "@/lib/dataStore";
+import { prisma } from "@/lib/prisma";
 import { PageHeaderMount } from "@/components/page-header";
 
 const dateFormatter = new Intl.DateTimeFormat("en", {
@@ -13,12 +13,10 @@ const LEVEL_STYLES: Record<string, string> = {
 };
 
 export default async function LogsPage() {
-  const data = await readData();
-  const logs = data.logs
-    .slice()
-    .sort(
-      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
-    );
+  const logs = await prisma.logEntry.findMany({
+    orderBy: { timestamp: "desc" },
+    take: 100,
+  });
 
   return (
     <>

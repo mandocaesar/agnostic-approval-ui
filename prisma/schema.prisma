@@ -1,0 +1,158 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id            String    @id @default(uuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  role          String    @default("User")
+  supervisorId  String?
+  
+  // Auth relations
+  accounts      Account[]
+  sessions      Session[]
+  
+  // App relations
+  approvalsRequested Approval[] @relation("Requester")
+  // Note: Approver relation is handled via IDs array in Approval for simplicity in this schema,
+  // or we could use a join table. Sticking to array for now to match types.
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+ 
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+ 
+  @@unique([provider, providerAccountId])
+}
+ 
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+ 
+model VerificationToken {
+  identifier String
+  token      String
+  expires    DateTime
+ 
+  @@unique([identifier, token])
+}
+
+model Domain {
+  id          String   @id @default(uuid())
+  name        String
+  description String
+  tags        String[]
+  owner       Json?    // Stores {id, name, email}
+  connectivity Json?   // Stores DomainConnectivity
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  subdomains  Subdomain[]
+  approvals   Approval[]
+}
+
+model Subdomain {
+  id          String   @id @default(uuid())
+  name        String
+  description String
+  domainId    String
+  tags        String[]
+  owner       Json?    // Stores {id, name, email}
+  connectivity Json?   // Stores DomainConnectivity
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  domain      Domain         @relation(fields: [domainId], references: [id])
+  flows       ApprovalFlow[]
+  approvals   Approval[]
+}
+
+model ApprovalFlow {
+  id              String   @id @default(uuid())
+  name            String
+  version         String
+  description     String
+  definition      Json     // Stores ApprovalFlowDefinition
+  metadata        Json?
+  subdomainId     String
+  activeVersionId String?  // ID of the currently active version
+  updatedAt       DateTime @updatedAt
+
+  subdomain   Subdomain @relation(fields: [subdomainId], references: [id])
+  approvals   Approval[]
+  versions    FlowVersion[]
+}
+
+model FlowVersion {
+  id          String   @id @default(uuid())
+  flowId      String
+  version     String
+  name        String
+  description String
+  definition  Json     // Stores ApprovalFlowDefinition
+  metadata    Json?
+  isActive    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  createdBy   String?  // User who created this version
+  
+  flow        ApprovalFlow @relation(fields: [flowId], references: [id], onDelete: Cascade)
+  
+  @@index([flowId])
+  @@index([flowId, isActive])
+}
+
+model Approval {
+  id            String   @id @default(uuid())
+  title         String
+  domainId      String
+  subdomainId   String
+  flowId        String
+  requesterId   String
+  approverIds   String[]
+  status        String   // Enum: in_process, approved, reject, end
+  currentStageId String?
+  payload       Json
+  metadata      Json?    // Stores comments, iterationCount, etc.
+  submittedAt   DateTime @default(now())
+  lastUpdatedAt DateTime @updatedAt
+  completedAt   DateTime?
+
+  domain      Domain       @relation(fields: [domainId], references: [id])
+  subdomain   Subdomain    @relation(fields: [subdomainId], references: [id])
+  flow        ApprovalFlow @relation(fields: [flowId], references: [id])
+  requester   User         @relation("Requester", fields: [requesterId], references: [id])
+}
+
+model LogEntry {
+  id        String   @id @default(uuid())
+  timestamp DateTime @default(now())
+  level     String   // info, warning, error
+  message   String
+  context   Json?
+}

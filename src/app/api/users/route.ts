@@ -1,7 +1,12 @@
+import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
-import { readData } from "@/lib/dataStore";
 
 export async function GET() {
-  const { users } = await readData();
-  return NextResponse.json(users);
+  try {
+    const users = await prisma.user.findMany();
+    return NextResponse.json(users);
+  } catch (error) {
+    console.error("Failed to fetch users:", error);
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+  }
 }

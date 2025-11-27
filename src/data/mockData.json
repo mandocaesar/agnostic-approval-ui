@@ -163,7 +163,19 @@
                 ]
               }
             }
-          ]
+          ],
+          "connectivity": {
+            "webhook": {
+              "enabled": false,
+              "url": "",
+              "method": "POST"
+            },
+            "kafka": {
+              "enabled": false,
+              "topic": ""
+            }
+          },
+          "updatedAt": "2025-11-25T06:43:29.390Z"
         },
         {
           "id": "billpayment-category",
@@ -274,7 +286,18 @@
             }
           ]
         }
-      ]
+      ],
+      "connectivity": {
+        "kafka": {
+          "enabled": false,
+          "topic": ""
+        },
+        "webhook": {
+          "enabled": false,
+          "url": ""
+        }
+      },
+      "updatedAt": "2025-11-25T06:43:29.390Z"
     },
     {
       "id": "procurement",
@@ -515,6 +538,15 @@
           ]
         }
       ]
+    },
+    {
+      "id": "dom-a47f8f4c",
+      "name": "IBB",
+      "description": "blabla",
+      "subdomains": [],
+      "tags": [],
+      "createdAt": "2025-11-25T06:44:50.304Z",
+      "updatedAt": "2025-11-25T06:44:50.304Z"
     }
   ],
   "approvals": [

@@ -1,314 +1,446 @@
-import { readData } from "@/lib/dataStore";
+import { prisma } from "@/lib/prisma";
 import { StatCard } from "@/components/stat-card";
-import { StatusBadge } from "@/components/status-badge";
-import type { ApprovalStatus } from "@/types";
+import { TrendChart } from "@/components/trend-chart";
 import { PageHeaderMount } from "@/components/page-header";
-
-const STATUS_ORDER: ApprovalStatus[] = [
-  "in_process",
-  "approved",
-  "reject",
-  "end",
-];
+import { AirportScheduleBoard } from "@/components/airport-schedule-board";
+import { DomainDistributionChart } from "@/components/domain-distribution-chart";
+import type { ApprovalStatus } from "@/types";
+import Link from "next/link";
 
 const STATUS_TITLES: Record<ApprovalStatus, string> = {
-  in_process: "In process",
+  in_process: "Pending",
   approved: "Approved",
-  reject: "Reject",
-  end: "End",
+  reject: "Rejected",
+  end: "Completed",
 };
 
-const STATUS_DESCRIPTIONS: Record<ApprovalStatus, string> = {
-  in_process: "Requests actively being worked or reviewed.",
-  approved: "Successfully cleared review.",
-  reject: "Declined and requires action or reroute.",
-  end: "Closed out after final decision.",
-};
+function formatDate(date: Date): string {
+  return date.toLocaleString("en", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+}
 
-const dateFormatter = new Intl.DateTimeFormat("en", {
-  dateStyle: "medium",
-  timeStyle: "short",
-});
+function formatBoardTime(date: Date): string {
+  return date.toLocaleTimeString("en", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatRelativeTime(date: Date): string {
+  const diffMs = Date.now() - date.getTime();
+  const minutes = Math.floor(diffMs / (1000 * 60));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+function domainCodeFromName(name: string): string {
+  const letters = name
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part[0])
+    .join("")
+    .slice(0, 3)
+    .toUpperCase();
+
+  if (letters.length === 0) return "DOM";
+  if (letters.length < 3) return letters.padEnd(3, "X");
+  return letters;
+}
 
 export default async function ApprovalsPage() {
-  const data = await readData();
-  const domainMap = Object.fromEntries(
-    data.domains.map((domain) => [domain.id, domain.name]),
-  );
-  const subdomainMap = Object.fromEntries(
-    data.domains.flatMap((domain) =>
-      domain.subdomains.map((subdomain) => [subdomain.id, subdomain.name]),
-    ),
-  );
-  const userMap = Object.fromEntries(
-    data.users.map((user) => [user.id, user.name]),
-  );
+  // Fetch data from database
+  const [approvals, domains, users] = await Promise.all([
+    prisma.approval.findMany({
+      orderBy: { lastUpdatedAt: "desc" },
+    }),
+    prisma.domain.findMany({
+      include: { subdomains: true },
+    }),
+    prisma.user.findMany(),
+  ]);
 
-  const statusTotals = data.approvals.reduce<Record<ApprovalStatus, number>>(
-    (acc, approval) => {
-      acc[approval.status] += 1;
-      return acc;
-    },
-    {
+  // Get current date and last month date
+  const now = new Date();
+  const currentMonth = now.getMonth();
+  const currentYear = now.getFullYear();
+  const lastMonth = currentMonth === 0 ? 11 : currentMonth - 1;
+  const lastMonthYear = currentMonth === 0 ? currentYear - 1 : currentYear;
+
+  // Helper to check if date is in current month
+  const isCurrentMonth = (dateStr: string | Date) => {
+    const date = new Date(dateStr);
+    return date.getMonth() === currentMonth && date.getFullYear() === currentYear;
+  };
+
+  // Helper to check if date is in last month
+  const isLastMonth = (dateStr: string | Date) => {
+    const date = new Date(dateStr);
+    return date.getMonth() === lastMonth && date.getFullYear() === lastMonthYear;
+  };
+
+  // Calculate current month stats
+  const totalApprovals = approvals.length;
+  const totalThisMonth = approvals.filter((a) => isCurrentMonth(a.submittedAt)).length;
+  const totalLastMonth = approvals.filter((a) => isLastMonth(a.submittedAt)).length;
+  const totalTrend = totalLastMonth > 0
+    ? Math.round(((totalThisMonth - totalLastMonth) / totalLastMonth) * 100)
+    : 0;
+
+  const pendingCount = approvals.filter((a) => a.status === "in_process").length;
+  const pendingThisMonth = approvals.filter((a) => a.status === "in_process" && isCurrentMonth(a.submittedAt)).length;
+  const pendingLastMonth = approvals.filter((a) => a.status === "in_process" && isLastMonth(a.submittedAt)).length;
+  const pendingTrend = pendingLastMonth > 0
+    ? Math.round(((pendingThisMonth - pendingLastMonth) / pendingLastMonth) * 100)
+    : 0;
+
+  const approvedCount = approvals.filter((a) => a.status === "approved").length;
+  const approvedThisMonth = approvals.filter((a) => a.status === "approved" && isCurrentMonth(a.submittedAt)).length;
+  const approvedLastMonth = approvals.filter((a) => a.status === "approved" && isLastMonth(a.submittedAt)).length;
+  const approvedTrend = approvedLastMonth > 0
+    ? Math.round(((approvedThisMonth - approvedLastMonth) / approvedLastMonth) * 100)
+    : 0;
+
+  const rejectedCount = approvals.filter((a) => a.status === "reject").length;
+  const rejectedThisMonth = approvals.filter((a) => a.status === "reject" && isCurrentMonth(a.submittedAt)).length;
+  const rejectedLastMonth = approvals.filter((a) => a.status === "reject" && isLastMonth(a.submittedAt)).length;
+  const rejectedTrend = rejectedLastMonth > 0
+    ? Math.round(((rejectedThisMonth - rejectedLastMonth) / rejectedLastMonth) * 100)
+    : 0;
+
+  // Domain distribution for chart with consistent colors
+  const domainColors = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899"];
+  const domainCounts = domains.map((domain, index) => ({
+    label: domain.name,
+    value: approvals.filter((a) => a.domainId === domain.id).length,
+    color: domainColors[index % domainColors.length],
+  }));
+  const domainStatusColors: Record<ApprovalStatus, string> = {
+    in_process: "#f59e0b",
+    approved: "#10b981",
+    reject: "#ef4444",
+    end: "#94a3b8",
+  };
+  const domainStatusBreakdown = domains.map((domain, index) => {
+    const approvalsForDomain = approvals.filter((a) => a.domainId === domain.id);
+    const statusCounts: Record<ApprovalStatus, number> = {
       in_process: 0,
       approved: 0,
       reject: 0,
       end: 0,
-    },
-  );
+    };
 
-  const approvals = data.approvals
+    approvalsForDomain.forEach((approval) => {
+      statusCounts[approval.status as ApprovalStatus] += 1;
+    });
+
+    const lastUpdatedAt = approvalsForDomain.reduce((latest, approval) => {
+      const ts = new Date(approval.lastUpdatedAt).getTime();
+      return ts > latest ? ts : latest;
+    }, 0);
+
+    const safeTotal = approvalsForDomain.length || 1;
+
+    return {
+      id: domain.id,
+      name: domain.name,
+      color: domainColors[index % domainColors.length],
+      total: approvalsForDomain.length,
+      statusCounts,
+      completion: Math.round(((statusCounts.approved + statusCounts.end) / safeTotal) * 100),
+      lastUpdatedAt: lastUpdatedAt ? new Date(lastUpdatedAt) : null,
+    };
+  });
+  const busiestDomain = domainStatusBreakdown
     .slice()
-    .sort(
-      (a, b) =>
-        new Date(b.lastUpdatedAt).getTime() -
-        new Date(a.lastUpdatedAt).getTime(),
-    );
+    .sort((a, b) => b.total - a.total)[0];
+  const mostInFlightDomain = domainStatusBreakdown
+    .slice()
+    .sort((a, b) => b.statusCounts.in_process - a.statusCounts.in_process)[0];
 
-  const approvalsByStatus = STATUS_ORDER.reduce<
-    Record<ApprovalStatus, typeof approvals>
-  >(
-    (acc, status) => {
-      acc[status] = approvals.filter(
-        (approval) => approval.status === status,
-      );
-      return acc;
-    },
-    {
-      in_process: [],
-      approved: [],
-      reject: [],
-      end: [],
-    },
+  // Trend data (last 12 months) - pure API data
+  // Track data for specific domains: Bill Payment, Procurement, IBB
+  const billPaymentDomain = domains.find(d => d.name.toLowerCase().includes('bill'));
+  const procurementDomain = domains.find(d => d.name.toLowerCase().includes('procurement'));
+  const ibbDomain = domains.find(d => d.name.toLowerCase().includes('ibb'));
+
+  const trendData = Array.from({ length: 12 }, (_, i) => {
+    const date = new Date();
+    date.setMonth(date.getMonth() - (11 - i));
+    const year = date.getFullYear();
+    const month = date.getMonth();
+    const monthStr = date.toLocaleDateString("en-US", { month: "short" });
+
+    // Get approvals for each domain for this month
+    const getMonthlyDomainCount = (domainId: string | undefined) => {
+      if (!domainId) return 0;
+      return approvals.filter((approval) => {
+        const approvalDate = new Date(approval.submittedAt);
+        return approval.domainId === domainId &&
+               approvalDate.getFullYear() === year && 
+               approvalDate.getMonth() === month;
+      }).length;
+    };
+
+    const billpayment = getMonthlyDomainCount(billPaymentDomain?.id);
+    const procurement = getMonthlyDomainCount(procurementDomain?.id);
+    const ibb = getMonthlyDomainCount(ibbDomain?.id);
+    
+    return { 
+      date: monthStr, 
+      billpayment,
+      procurement,
+      ibb,
+      count: billpayment + procurement + ibb
+    };
+  });
+
+  const boardRefreshedAt = now.toLocaleTimeString("en", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  // Recent approvals (last 10)
+  const recentApprovals = approvals
+    .slice()
+    .sort((a, b) => new Date(b.lastUpdatedAt).getTime() - new Date(a.lastUpdatedAt).getTime())
+    .slice(0, 10);
+
+  const domainNameMap = Object.fromEntries(
+    domains.map((domain) => [domain.id, domain.name])
   );
 
   return (
     <>
       <PageHeaderMount
-        eyebrow="Approvals"
         title="Approvals"
-        description="Monitor request throughput, recent activities, and status distribution across every domain."
+        description="Overview of all approval requests"
       />
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        {STATUS_ORDER.map((status) => (
+
+      <div className="space-y-6 p-6">
+        {/* Stats Cards */}
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
           <StatCard
-            key={status}
-            title={STATUS_DESCRIPTIONS[status]}
-            value={statusTotals[status]}
-            subtitle={`Status: ${STATUS_TITLES[status].toUpperCase()}`}
-          />
-        ))}
-      </section>
-
-      <section className="border border-slate-200 bg-white shadow-sm">
-        <header className="flex flex-col gap-4 border-b border-slate-100 px-6 py-5">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <h2 className="text-lg font-semibold text-slate-900">
-              Approval Activity
-            </h2>
-            <div className="inline-flex items-center border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
-              {approvals.length} total
-            </div>
-          </div>
-          <p className="text-sm text-slate-500">
-            Monitor recently submitted approvals and track their decision trail.
-          </p>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex w-full max-w-lg items-center gap-3 border border-slate-200 bg-white px-4 py-2 shadow-sm">
-              <svg
-                className="h-4 w-4 text-slate-400"
-                viewBox="0 0 20 20"
-                fill="none"
-                aria-hidden="true"
-              >
-                <path
-                  d="m15.5 15.5-3.4-3.4a4.5 4.5 0 1 0-6.36-6.36 4.5 4.5 0 0 0 6.36 6.36l3.4 3.4Z"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
+            title="Total Approvals"
+            value={totalApprovals.toString()}
+            icon={
+              <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
               </svg>
-              <input
-                type="search"
-                placeholder="Cari berdasarkan judul, domain, atau requester"
-                className="w-full border-none bg-transparent text-sm text-slate-600 placeholder:text-slate-400 focus:outline-none"
-              />
-            </div>
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                className="border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
-              >
-                Filter
-              </button>
-              <button
-                type="button"
-                className="inline-flex items-center gap-2 bg-[#0d1d3b] px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-[#132a52]"
-              >
-                <svg
-                  className="h-4 w-4"
-                  viewBox="0 0 20 20"
-                  fill="none"
-                  aria-hidden="true"
-                >
-                  <path
-                    d="M4.167 4.167h11.666M5.833 7.5v7.083c0 .23.092.451.256.614.163.164.385.256.614.256h6.594c.23 0 .45-.092.614-.256.164-.163.256-.384.256-.614V7.5M8.333 7.5V5.833h3.334V7.5"
-                    stroke="currentColor"
-                    strokeWidth="1.4"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-                Download
-              </button>
-            </div>
-          </div>
-        </header>
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-left text-sm">
-            <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
-              <tr>
-                <th className="px-6 py-3 font-semibold text-slate-500">Request</th>
-                <th className="px-6 py-3 font-semibold text-slate-500">Domain</th>
-                <th className="px-6 py-3 font-semibold text-slate-500">Requester</th>
-                <th className="px-6 py-3 font-semibold text-slate-500">Approvers</th>
-                <th className="px-6 py-3 font-semibold text-slate-500">Status</th>
-                <th className="px-6 py-3 font-semibold text-slate-500">Last Update</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {approvals.map((approval) => (
-                <tr key={approval.id} className="hover:bg-slate-50">
-                  <td className="px-6 py-4">
-                    <div className="font-medium text-slate-900">
-                      {approval.title}
-                    </div>
-                    <div className="text-xs text-slate-500">
-                      #{approval.id}
-                    </div>
-                  </td>
-                  <td className="px-6 py-4">
-                    <div className="text-sm font-medium text-slate-700">
-                      {domainMap[approval.domainId] ?? "Unknown"}
-                    </div>
-                    <div className="text-xs text-slate-500">
-                      {subdomainMap[approval.subdomainId] ?? "— subdomain —"}
-                    </div>
-                  </td>
-                  <td className="px-6 py-4">
-                    <div className="text-sm text-slate-700">
-                      {userMap[approval.requesterId] ?? "Unknown"}
-                    </div>
-                  </td>
-                  <td className="px-6 py-4 text-sm text-slate-700">
-                    {approval.approverIds.length > 0
-                      ? approval.approverIds
-                          .map((id) => userMap[id] ?? "Unknown")
-                          .join(", ")
-                      : "Not assigned"}
-                  </td>
-                  <td className="px-6 py-4">
-                    <StatusBadge status={approval.status} />
-                  </td>
-                  <td className="px-6 py-4 text-sm text-slate-600">
-                    {dateFormatter.format(new Date(approval.lastUpdatedAt))}
-                  </td>
-                </tr>
-              ))}
-              {approvals.length === 0 ? (
-                <tr>
-                  <td
-                    className="px-6 py-8 text-center text-sm text-slate-500"
-                    colSpan={6}
-                  >
-                    No approvals recorded in the mock data set.
-                  </td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
+            }
+            trend={{
+              direction: totalTrend >= 0 ? "up" : "down",
+              label: `${totalTrend >= 0 ? '+' : ''}${totalTrend}% from last month`
+            }}
+          />
+          <StatCard
+            title="Pending"
+            value={pendingCount.toString()}
+            icon={
+              <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            }
+            trend={{
+              direction: pendingTrend >= 0 ? "up" : "down",
+              label: `${pendingTrend >= 0 ? '+' : ''}${pendingTrend}% from last month`
+            }}
+          />
+          <StatCard
+            title="Approved"
+            value={approvedCount.toString()}
+            icon={
+              <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            }
+            trend={{
+              direction: approvedTrend >= 0 ? "up" : "down",
+              label: `${approvedTrend >= 0 ? '+' : ''}${approvedTrend}% from last month`
+            }}
+          />
+          <StatCard
+            title="Rejected"
+            value={rejectedCount.toString()}
+            icon={
+              <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            }
+            trend={{
+              direction: rejectedTrend >= 0 ? "up" : "down",
+              label: `${rejectedTrend >= 0 ? '+' : ''}${rejectedTrend}% from last month`
+            }}
+          />
         </div>
-        <div className="flex flex-col gap-4 border-t border-slate-100 px-6 py-4 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between">
-          <span>Menampilkan 1 sampai {Math.min(10, approvals.length)} dari {approvals.length} baris</span>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              className="flex h-8 w-8 items-center justify-center border border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
-            >
-              «
-            </button>
-            <button
-              type="button"
-              className="flex h-8 min-w-[2rem] items-center justify-center border border-[#0d1d3b] bg-white text-sm font-medium text-[#0d1d3b]"
-            >
-              1
-            </button>
-            <button
-              type="button"
-              className="flex h-8 min-w-[2rem] items-center justify-center  border border-transparent bg-white text-sm font-medium text-slate-400 hover:border-slate-200 hover:text-slate-600"
-            >
-              2
-            </button>
-            <button
-              type="button"
-              className="flex h-8 min-w-[2rem] items-center justify-center border border-transparent bg-white text-sm font-medium text-slate-400 hover:border-slate-200 hover:text-slate-600"
-            >
-              3
-            </button>
-            <button
-              type="button"
-              className="flex h-8 w-8 items-center justify-center border border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
-            >
-              »
-            </button>
-          </div>
-        </div>
-      </section>
 
-      <section className="grid gap-4 lg:grid-cols-2">
-        {STATUS_ORDER.map((status) => (
-          <article
-            key={status}
-            className="border border-slate-200 bg-white shadow-sm"
-          >
-            <header className="flex items-center justify-between gap-3 border-b border-slate-100 px-6 py-5">
-              <div className="flex flex-col gap-2">
-                <StatusBadge status={status} />
-                <span className="text-sm text-slate-500">
-                  {STATUS_DESCRIPTIONS[status]}
-                </span>
+        {/* Charts Row */}
+        <div className="grid gap-6 lg:grid-cols-2 lg:h-[calc(100vh-400px)]">
+          {/* Left Column: Trend Chart + Recent Approvals */}
+          <div className="flex flex-col gap-6 overflow-hidden">
+            <TrendChart data={trendData} title="Approvals (Last 30 Days)" height={220} />
+            
+            <div className="flex-1 flex flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm min-h-0">
+              <div className="border-b border-slate-200/70 px-6 py-4 shrink-0 flex items-center justify-between">
+                <div>
+                  <div className="text-base font-semibold text-slate-900">Recent Approvals</div>
+                  <p className="text-sm text-slate-600">Latest approval activity</p>
+                </div>
+                <Link
+                  href="/dashboard/approvals/all"
+                  className="text-sm font-medium text-blue-600 hover:text-blue-700 transition"
+                >
+                  View All →
+                </Link>
               </div>
-              <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-                {statusTotals[status]} item(s)
-              </span>
-            </header>
-            <ul className="divide-y divide-slate-100">
-              {approvalsByStatus[status].map((approval) => (
-                <li key={approval.id} className="px-6 py-4">
-                  <div className="font-medium text-slate-900">
-                    {approval.title}
-                  </div>
-                  <div className="mt-1 text-xs text-slate-500">
-                    Requester: {userMap[approval.requesterId] ?? "Unknown"} ·{" "}
-                    Domain: {domainMap[approval.domainId] ?? "Unknown"} ·{" "}
-                    {subdomainMap[approval.subdomainId] ?? "Subdomain unknown"}
-                  </div>
-                  <div className="mt-2 text-xs text-slate-400">
-                    Last updated{" "}
-                    {dateFormatter.format(new Date(approval.lastUpdatedAt))}
-                  </div>
-                </li>
-              ))}
-              {approvalsByStatus[status].length === 0 ? (
-                <li className="px-6 py-8 text-sm text-slate-500">
-                  No approvals currently in {STATUS_TITLES[status]} status.
-                </li>
-              ) : null}
-            </ul>
-          </article>
-        ))}
-      </section>
+              <div className="flex-1 overflow-y-auto min-h-0">
+                <AirportScheduleBoard 
+                  approvals={approvals} 
+                  users={users} 
+                  domains={domainNameMap} 
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Right Column: Domain Distribution */}
+          <div className="flex flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-gradient-to-br from-sky-50 via-white to-indigo-50 shadow-sm min-h-0">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/70 px-6 py-4 shrink-0">
+              <div>
+                <div className="text-base font-semibold text-slate-900">Approvals by domain</div>
+                <p className="text-sm text-slate-600">Volume, clearance, and share per domain</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {busiestDomain ? (
+                  <span className="inline-flex items-center gap-2 rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-800 shadow-sm ring-1 ring-slate-200">
+                    <span className="h-2 w-2 rounded-full" style={{ backgroundColor: busiestDomain.color }} />
+                    Volume leader: {busiestDomain.name}
+                  </span>
+                ) : null}
+                {mostInFlightDomain ? (
+                  <span className="inline-flex items-center gap-2 rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold text-slate-50 shadow-sm ring-1 ring-slate-900/10">
+                    <span className="h-2 w-2 rounded-full bg-amber-400" />
+                    Most in Review: {mostInFlightDomain.name}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-6 py-6 min-h-0">
+              <div className="space-y-3">
+                {domainStatusBreakdown
+                  .slice()
+                  .sort((a, b) => b.total - a.total)
+                  .map((domain) => {
+                    const safeTotal = Math.max(domain.total, 1);
+                    return (
+                      <div
+                        key={domain.id}
+                        className="group rounded-xl border border-slate-200/80 bg-white/80 p-4 shadow-sm ring-1 ring-transparent transition duration-200 hover:-translate-y-0.5 hover:shadow-lg hover:ring-slate-200"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex items-center gap-3">
+                            <span
+                              className="grid h-10 w-10 place-items-center rounded-lg border text-sm font-semibold text-slate-900"
+                              style={{
+                                borderColor: domain.color,
+                                backgroundColor: `${domain.color}15`,
+                              }}
+                            >
+                              {domainCodeFromName(domain.name)}
+                            </span>
+                            <div>
+                              <div className="text-sm font-semibold text-slate-900">
+                                {domain.name}
+                              </div>
+                              <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-[0.14em] text-slate-500">
+                                <span className="rounded-full bg-slate-100 px-2 py-1 font-mono text-[10px] text-slate-600">
+                                  {domain.total} total
+                                </span>
+                                <span className="rounded-full bg-emerald-50 px-2 py-1 text-emerald-700">
+                                  {domain.completion}% cleared
+                                </span>
+                                {domain.lastUpdatedAt ? (
+                                  <span className="rounded-full bg-slate-100 px-2 py-1">
+                                    Updated {formatRelativeTime(domain.lastUpdatedAt)}
+                                  </span>
+                                ) : null}
+                              </div>
+                            </div>
+                          </div>
+                          <span className="rounded-full bg-slate-900/5 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+                            Flow {domainCodeFromName(domain.name)}
+                          </span>
+                        </div>
+
+                        <div className="mt-3 flex h-2 overflow-hidden rounded-full bg-slate-100">
+                          <span
+                            className="h-full"
+                            style={{
+                              width: `${(domain.statusCounts.approved / safeTotal) * 100}%`,
+                              backgroundColor: domainStatusColors.approved,
+                            }}
+                            aria-hidden
+                          />
+                          <span
+                            className="h-full"
+                            style={{
+                              width: `${(domain.statusCounts.in_process / safeTotal) * 100}%`,
+                              backgroundColor: domainStatusColors.in_process,
+                            }}
+                            aria-hidden
+                          />
+                          <span
+                            className="h-full"
+                            style={{
+                              width: `${(domain.statusCounts.reject / safeTotal) * 100}%`,
+                              backgroundColor: domainStatusColors.reject,
+                            }}
+                            aria-hidden
+                          />
+                          <span
+                            className="h-full"
+                            style={{
+                              width: `${(domain.statusCounts.end / safeTotal) * 100}%`,
+                              backgroundColor: domainStatusColors.end,
+                            }}
+                            aria-hidden
+                          />
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-500">
+                          <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-1 text-amber-700">
+                            <span className="h-2 w-2 rounded-full bg-amber-400" />
+                            Review {domain.statusCounts.in_process}
+                          </span>
+                          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-1 text-emerald-700">
+                            <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                            Approved {domain.statusCounts.approved}
+                          </span>
+                          <span className="inline-flex items-center gap-1 rounded-full bg-rose-50 px-2 py-1 text-rose-700">
+                            <span className="h-2 w-2 rounded-full bg-rose-500" />
+                            Reject {domain.statusCounts.reject}
+                          </span>
+                          <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-slate-700">
+                            <span className="h-2 w-2 rounded-full bg-slate-400" />
+                            Completed {domain.statusCounts.end}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </>
   );
 }

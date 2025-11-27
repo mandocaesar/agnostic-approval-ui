@@ -4,80 +4,42 @@ import {
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
-  type PointerEvent as ReactPointerEvent,
 } from "react";
-import type { ApprovalFlow, ApprovalStatus, Domain, User } from "@/types";
+import {
+  ReactFlow,
+  useNodesState,
+  useEdgesState,
+  addEdge,
+  Background,
+  Controls,
+  MiniMap,
+  useReactFlow,
+  type Node,
+  type Edge,
+  type Connection,
+  ConnectionLineType,
+} from "@xyflow/react";
+import "@xyflow/react/dist/style.css";
 
-const STATUS_OPTIONS: {
-  value: ApprovalStatus;
-  label: string;
-  forceFinal?: boolean;
-}[] = [
-  { value: "in_process", label: "In process" },
+import type { ApprovalFlow, ApprovalStatus, Domain, StageEvent, User } from "@/types";
+import StageNode, { type StageNodeData } from "./flow/stage-node";
+import { StageSidebar } from "./flow/stage-sidebar";
+import { TransitionEditor } from "./flow/transition-editor";
+import DraggableEdge from "./flow/draggable-edge";
+import type { ConditionGroup } from "@/types";
+import { VersionHistory } from "./version-history";
+
+const STATUS_OPTIONS: { value: ApprovalStatus; label: string; forceFinal?: boolean }[] = [
+  { value: "in_process", label: "In Process" },
   { value: "approved", label: "Approved", forceFinal: true },
-  { value: "reject", label: "Reject" },
+  { value: "reject", label: "Rejected", forceFinal: true },
   { value: "end", label: "End", forceFinal: true },
 ];
 
-const STATUS_LABELS = Object.fromEntries(
-  STATUS_OPTIONS.map((option) => [option.value, option.label]),
-) as Record<ApprovalStatus, string>;
-
-const FINAL_STATUSES: ApprovalStatus[] = STATUS_OPTIONS.filter(
+const FINAL_STATUSES = STATUS_OPTIONS.filter(
   (option) => option.forceFinal,
 ).map((option) => option.value);
-
-const CANVAS_WIDTH = 1200;
-const CANVAS_HEIGHT = 560;
-const CARD_WIDTH = 220;
-const CARD_HEIGHT = 150;
-const CANVAS_PADDING = 48;
-const WORKSPACE_BUFFER = 400;
-
-interface StageDraft {
-  id: string;
-  name: string;
-  status: ApprovalStatus;
-  description: string;
-  actorUserId: string;
-  notifySupervisor: boolean;
-  ccActor: boolean;
-  isFinal?: boolean;
-  transitions: StageTransitionDraft[];
-  position: {
-    x: number;
-    y: number;
-  };
-}
-
-interface StageTransitionDraft {
-  id: string;
-  targetStageId: string | null;
-  targetStageName?: string;
-  targetStageStatus?: ApprovalStatus;
-  label: string;
-  conditions: string;
-}
-
-interface StageTransitionSeed {
-  id: string;
-  targetStatus?: ApprovalStatus | null;
-  targetStageId?: string | null;
-  targetStageName?: string;
-  targetStageStatus?: ApprovalStatus | null;
-  label: string;
-  conditions: string;
-}
-
-interface BuilderPreset {
-  flowName: string;
-  flowVersion: string;
-  stages: StageDraft[];
-  domainId?: string;
-  subdomainId?: string;
-}
 
 interface RuleBuilderProps {
   users: User[];
@@ -87,1359 +49,816 @@ interface RuleBuilderProps {
     domain: Domain;
     subdomain: Domain["subdomains"][number];
   };
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(Math.max(value, min), max);
-}
-
-function createStageId() {
-  return `stage-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function createTransitionDraft(
-  overrides: Partial<StageTransitionDraft> = {},
-): StageTransitionDraft {
-  return {
-    id: createStageId(),
-    targetStageId: null,
-    targetStageName: undefined,
-    targetStageStatus: undefined,
-    label: "",
-    conditions: "",
-    ...overrides,
-  };
+  selectedDomainId?: string;
+  selectedSubdomainId?: string;
 }
 
 function isLockedFinalStatus(status: ApprovalStatus) {
   return FINAL_STATUSES.includes(status);
 }
 
-function isStageFinal(stage: StageDraft) {
-  return isLockedFinalStatus(stage.status) || Boolean(stage.isFinal);
+function createStageId() {
+  return `stage-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function stagePosition(index: number): { x: number; y: number } {
-  const spacingX = 260;
-  const rows = 2;
-  const rowHeight = 200;
-  const row = index % rows;
-  const col = Math.floor(index / rows);
-  return {
-    x: CANVAS_PADDING + col * spacingX,
-    y: CANVAS_PADDING + row * rowHeight,
-  };
-}
+const nodeTypes = {
+  stage: StageNode,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+} as any;
 
-function findUserId(users: User[], matcher: RegExp) {
-  return users.find((user) => matcher.test(user.role))?.id ?? users[0]?.id ?? "";
-}
-
-function createInitialPreset(users: User[]): BuilderPreset {
-  const draftOwner = findUserId(users, /product owner/i);
-  const opsLead = findUserId(users, /operations|procurement/i);
-  const finalApprover = findUserId(users, /admin|compliance/i);
-  const stageIds = {
-    draft: createStageId(),
-    ops: createStageId(),
-    final: createStageId(),
-  };
-
-  const baseStages: (Omit<StageDraft, "position" | "transitions"> & {
-    transitions: StageTransitionSeed[];
-  })[] = [
-    {
-      id: stageIds.draft,
-      name: "Draft business case",
-      status: "in_process",
-      description:
-        "Capture scope, KPIs, and supporting documents for the requested change.",
-      actorUserId: draftOwner,
-      notifySupervisor: true,
-      ccActor: true,
-      isFinal: false,
-      transitions: [
-        {
-          id: createStageId(),
-          targetStageId: stageIds.ops,
-          targetStageName: "Operations validation",
-          label: "Submit for triage",
-          conditions: "Business case attached\nBudget validated",
-        },
-      ],
-    },
-    {
-      id: stageIds.ops,
-      name: "Operations validation",
-      status: "in_process",
-      description:
-        "Operations lead verifies vendor readiness, SLAs, and settlement coverage.",
-      actorUserId: opsLead,
-      notifySupervisor: true,
-      ccActor: false,
-      isFinal: false,
-      transitions: [
-        {
-          id: createStageId(),
-          targetStageId: stageIds.final,
-          targetStageName: "Final approval",
-          label: "Approve hand-off",
-          conditions: "Vendor SLA confirmed\nSettlement runbook updated",
-        },
-        {
-          id: createStageId(),
-          targetStatus: "reject",
-          targetStageName: "Rejected",
-          targetStageStatus: "reject",
-          label: "Reject for rework",
-          conditions: "Critical documentation missing",
-        },
-      ],
-    },
-    {
-      id: stageIds.final,
-      name: "Final approval",
-      status: "approved",
-      description:
-        "Executive approver signs off on launch timings and controls.",
-      actorUserId: finalApprover,
-      notifySupervisor: false,
-      ccActor: false,
-      isFinal: true,
-      transitions: [],
-    },
-  ];
-
-  const statusToStageId = new Map<ApprovalStatus, string>();
-  const stageMetaById = new Map(
-    baseStages.map((stage) => [stage.id, { name: stage.name, status: stage.status }]),
-  );
-  baseStages.forEach((stage) => statusToStageId.set(stage.status, stage.id));
-
-  const stages: StageDraft[] = baseStages.map((stage, index) => ({
-    ...stage,
-    transitions: stage.transitions.map((transition) => {
-      const explicitTargetId =
-        transition.targetStageId ??
-        (transition.targetStatus
-          ? statusToStageId.get(transition.targetStatus)
-          : null);
-      const targetMeta = explicitTargetId
-        ? stageMetaById.get(explicitTargetId)
-        : null;
-      return createTransitionDraft({
-        id: transition.id,
-        targetStageId: explicitTargetId ?? null,
-        targetStageName: transition.targetStageName ?? targetMeta?.name,
-        targetStageStatus:
-          transition.targetStageStatus ?? targetMeta?.status ?? undefined,
-        label: transition.label,
-        conditions: transition.conditions,
-      });
-    }),
-    position: stagePosition(index),
-  }));
-
-  return {
-    flowName: "New Approval Flow",
-    flowVersion: "1.0.0",
-    stages,
-  };
-}
-
-function buildPresetFromFlow(
-  context: {
-    flow: ApprovalFlow;
-    domain: Domain;
-    subdomain: Domain["subdomains"][number];
-  },
-  users: User[],
-): BuilderPreset {
-  const fallbackActorId = users[0]?.id ?? "";
-  const statusToStageId = new Map<ApprovalStatus, string>();
-  const stageMetaMap = new Map(
-    context.flow.definition.stages.map((stage) => [stage.id, stage]),
-  );
-  context.flow.definition.stages.forEach((stage) => {
-    statusToStageId.set(stage.status, stage.id);
-  });
-  const stageDrafts: StageDraft[] = context.flow.definition.stages.map(
-    (stage, index) => {
-      return {
-        id: stage.id || createStageId(),
-        name: stage.name,
-        status: stage.status,
-        description: stage.description,
-        actorUserId: stage.actorUserId ?? fallbackActorId,
-        notifySupervisor: stage.notification?.sendToActorSupervisor ?? false,
-        ccActor: stage.notification?.ccActor ?? false,
-        isFinal: isLockedFinalStatus(stage.status),
-        transitions: (stage.transitions ?? []).map((transition) => {
-          const resolvedTargetId =
-            transition.targetStageId ??
-            statusToStageId.get(transition.to) ??
-            null;
-          const targetStage = resolvedTargetId
-            ? stageMetaMap.get(resolvedTargetId)
-            : null;
-          return {
-            id: `${stage.id}-${resolvedTargetId ?? transition.to}-${transition.label ?? "branch"}`,
-            targetStageId: resolvedTargetId,
-            targetStageName:
-              transition.targetStageName ?? targetStage?.name ?? undefined,
-            targetStageStatus: targetStage?.status ?? transition.to,
-            label: transition.label ?? "",
-            conditions: (transition.conditions ?? []).join("\n"),
-          };
-        }),
-        position: stagePosition(index),
-      };
-    },
-  );
-
-  return {
-    flowName: context.flow.name,
-    flowVersion: context.flow.version,
-    stages: stageDrafts,
-    domainId: context.domain.id,
-    subdomainId: context.subdomain.id,
-  };
-}
-
-function conditionsToArray(value: string) {
-  return value
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-}
-
-function sortStagesForFlow(stages: StageDraft[]) {
-  return stages
-    .slice()
-    .sort(
-      (a, b) =>
-        a.position.x - b.position.x ||
-        a.position.y - b.position.y ||
-        a.name.localeCompare(b.name),
-    );
-}
+const edgeTypes = {
+  draggable: DraggableEdge,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+} as any;
 
 export function RuleBuilder({
   users,
   domains,
   initialFlowContext,
+  selectedDomainId,
+  selectedSubdomainId,
 }: RuleBuilderProps) {
-  const defaultPreset = useMemo(() => createInitialPreset(users), [users]);
-  const editPreset = useMemo(
-    () =>
-      initialFlowContext
-        ? buildPresetFromFlow(initialFlowContext, users)
-        : null,
-    [initialFlowContext, users],
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node<StageNodeData>>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const [flowName, setFlowName] = useState(
+    initialFlowContext?.flow.name ?? "New Approval Flow"
   );
-  const currentPreset = editPreset ?? defaultPreset;
-  const isEditing = Boolean(initialFlowContext);
-
-  const [flowName, setFlowName] = useState(currentPreset.flowName);
-  const [flowVersion, setFlowVersion] = useState(currentPreset.flowVersion);
-  const [stages, setStages] = useState<StageDraft[]>(currentPreset.stages);
-  const [selectedStageId, setSelectedStageId] = useState(
-    currentPreset.stages[0]?.id ?? "",
-  );
-  const [selectedDomainId, setSelectedDomainId] = useState(
-    currentPreset.domainId ?? domains[0]?.id ?? "",
-  );
-  const [selectedSubdomainId, setSelectedSubdomainId] = useState(
-    currentPreset.subdomainId ??
-      domains.find((domain) => domain.id === currentPreset.domainId)?.subdomains[0]
-        ?.id ??
-      domains[0]?.subdomains[0]?.id ??
-      "",
-  );
-  const [zoom, setZoom] = useState(1);
-  const [copied, setCopied] = useState(false);
+  const [selectedStageId, setSelectedStageId] = useState<string | null>(null);
   const [isStageModalOpen, setIsStageModalOpen] = useState(false);
-  const [isJsonModalOpen, setIsJsonModalOpen] = useState(false);
-  const [linkSourceStageId, setLinkSourceStageId] = useState<string | null>(
-    null,
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [isTransitionModalOpen, setIsTransitionModalOpen] = useState(false);
+  const [edgeConditions, setEdgeConditions] = useState<
+    Record<string, { conditionGroups: ConditionGroup[]; isDefault: boolean }>
+  >({});
+  
+  // Alert/Error modals
+  const [alertModal, setAlertModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    type: 'success' | 'error' | 'warning';
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    type: 'success',
+  });
+  
+  // Domain and subdomain selection state
+  const [currentDomainId, setCurrentDomainId] = useState<string>(
+    initialFlowContext?.domain.id ?? selectedDomainId ?? ""
   );
-  const [jsonRecentlyUpdated, setJsonRecentlyUpdated] = useState(false);
-  const [linkPreview, setLinkPreview] = useState<{
-    sourceStageId: string;
+  const [currentSubdomainId, setCurrentSubdomainId] = useState<string>(
+    initialFlowContext?.subdomain.id ?? selectedSubdomainId ?? ""
+  );
+  
+  // Track if initial load is complete
+  const [isInitialized, setIsInitialized] = useState(false);
+  
+  // Context menu state
+  const [contextMenu, setContextMenu] = useState<{
+    isOpen: boolean;
     x: number;
     y: number;
-  } | null>(null);
-  const [canvasPan, setCanvasPan] = useState({ x: 0, y: 0 });
-  const panOriginRef = useRef({ x: 0, y: 0 });
-  const [isSpacePressed, setIsSpacePressed] = useState(false);
-  const canvasRef = useRef<HTMLDivElement | null>(null);
-
-  const userMap = useMemo(
-    () => Object.fromEntries(users.map((user) => [user.id, user])),
-    [users],
-  );
-  const selectedDomain = useMemo(
-    () => domains.find((domain) => domain.id === selectedDomainId) ?? domains[0],
-    [domains, selectedDomainId],
-  );
-  const selectedSubdomain = useMemo(
-    () =>
-      selectedDomain?.subdomains.find(
-        (subdomain) => subdomain.id === selectedSubdomainId,
-      ) ?? selectedDomain?.subdomains[0],
-    [selectedDomain, selectedSubdomainId],
-  );
-  const subdomainOptions = selectedDomain?.subdomains ?? [];
-
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.code === "Space") {
-        event.preventDefault();
-        setIsSpacePressed(true);
-      }
-    };
-    const handleKeyUp = (event: KeyboardEvent) => {
-      if (event.code === "Space") {
-        event.preventDefault();
-        setIsSpacePressed(false);
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    window.addEventListener("keyup", handleKeyUp);
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("keyup", handleKeyUp);
-    };
-  }, []);
-
-  const applyPreset = useCallback(
-    (presetToApply: BuilderPreset) => {
-      setFlowName(presetToApply.flowName);
-      setFlowVersion(presetToApply.flowVersion);
-      setStages(presetToApply.stages);
-      setSelectedStageId(presetToApply.stages[0]?.id ?? "");
-      const fallbackDomainId = presetToApply.domainId ?? domains[0]?.id ?? "";
-      setSelectedDomainId(fallbackDomainId);
-      const fallbackSubdomainId =
-        presetToApply.subdomainId ??
-        domains.find((domain) => domain.id === fallbackDomainId)?.subdomains[0]
-          ?.id ??
-        domains[0]?.subdomains[0]?.id ??
-        "";
-      setSelectedSubdomainId(fallbackSubdomainId);
-      setZoom(1);
-    },
-    [domains],
-  );
-
-  const handleDomainChange = (domainId: string) => {
-    setSelectedDomainId(domainId);
-    const domain = domains.find((item) => item.id === domainId);
-    setSelectedSubdomainId(domain?.subdomains[0]?.id ?? "");
-  };
-
-  const handleSubdomainChange = (subdomainId: string) => {
-    setSelectedSubdomainId(subdomainId);
-  };
-
-  const addTransitionBranch = (stageId: string) => {
-    setStages((prev) =>
-      prev.map((stage) =>
-        stage.id === stageId
-          ? {
-              ...stage,
-              transitions:
-                stage.transitions.length >= 2
-                  ? stage.transitions
-                  : [
-                      ...stage.transitions,
-                      createTransitionDraft(),
-                    ],
-            }
-          : stage,
-      ),
-    );
-  };
-
-  const updateTransitionBranch = (
-    stageId: string,
-    branchId: string,
-    updates: Partial<StageTransitionDraft>,
-  ) => {
-    setStages((prev) =>
-      prev.map((stage) =>
-        stage.id === stageId
-          ? {
-              ...stage,
-              transitions: stage.transitions.map((branch) =>
-                branch.id === branchId ? { ...branch, ...updates } : branch,
-              ),
-            }
-          : stage,
-      ),
-    );
-  };
-
-  const setTransitionTargetStage = (
-    stageId: string,
-    branchId: string,
-    targetStageId: string | null,
-  ) => {
-    setStages((prev) =>
-      prev.map((stage) => {
-        if (stage.id !== stageId) {
-          return stage;
-        }
-        const targetStage = targetStageId
-          ? prev.find((candidate) => candidate.id === targetStageId)
-          : null;
-        return {
-          ...stage,
-          transitions: stage.transitions.map((branch) =>
-            branch.id === branchId
-              ? {
-                  ...branch,
-                  targetStageId,
-                  targetStageName: targetStage?.name,
-                  targetStageStatus: targetStage?.status,
-                }
-              : branch,
-          ),
-        };
-      }),
-    );
-    setJsonRecentlyUpdated(true);
-  };
-
-  const disconnectTransition = (stageId: string, transitionId: string) => {
-    setStages((prev) =>
-      prev.map((stage) => {
-        if (stage.id !== stageId) {
-          return stage;
-        }
-        return {
-          ...stage,
-          transitions: stage.transitions.map((transition) =>
-            transition.id === transitionId
-              ? {
-                  ...transition,
-                  targetStageId: null,
-                  targetStageName: undefined,
-                  targetStageStatus: undefined,
-                }
-              : transition,
-          ),
-        };
-      }),
-    );
-    setJsonRecentlyUpdated(true);
-  };
-
-  const removeTransitionBranch = (stageId: string, branchId: string) => {
-    setStages((prev) =>
-      prev.map((stage) =>
-        stage.id === stageId
-          ? {
-              ...stage,
-              transitions: stage.transitions.filter(
-                (branch) => branch.id !== branchId,
-              ),
-            }
-          : stage,
-      ),
-    );
-  };
-
-  const toggleFinalState = (stage: StageDraft, nextIsFinal: boolean) => {
-    if (isLockedFinalStatus(stage.status)) {
-      return;
-    }
-    if (nextIsFinal) {
-      handleStageChange(stage.id, {
-        isFinal: true,
-        transitions: [],
-      });
-    } else {
-      handleStageChange(stage.id, {
-        isFinal: false,
-        transitions:
-          stage.transitions.length > 0
-            ? stage.transitions
-            : [createTransitionDraft()],
-      });
-    }
-  };
-
-  const orderedStages = useMemo(() => sortStagesForFlow(stages), [stages]);
-  const stageById = useMemo(() => {
-    return new Map(stages.map((stage): [string, StageDraft] => [stage.id, stage]));
-  }, [stages]);
-  const selectedStage =
-    stages.find((stage) => stage.id === selectedStageId) ?? stages[0] ?? null;
-
-  const stageBounds = useMemo(() => {
-    return stages.reduce(
-      (acc, stage) => ({
-        maxX: Math.max(acc.maxX, stage.position.x),
-        maxY: Math.max(acc.maxY, stage.position.y),
-      }),
-      { maxX: 0, maxY: 0 },
-    );
-  }, [stages]);
-
-  const stagePayload = orderedStages.map((stage) => {
-    const actor = userMap[stage.actorUserId];
-    const stageIsFinal = isStageFinal(stage);
-    const transitions =
-      stageIsFinal || stage.transitions.length === 0
-        ? []
-        : stage.transitions
-            .map((transition) => {
-              if (!transition.targetStageId) {
-                return null;
-              }
-              const targetStage = stageById.get(transition.targetStageId);
-              if (!targetStage) {
-                return null;
-              }
-              return {
-                to: transition.targetStageStatus ?? targetStage.status,
-                targetStageId: targetStage.id,
-                targetStageName:
-                  transition.targetStageName ?? targetStage.name,
-                label: transition.label || undefined,
-                conditions: conditionsToArray(transition.conditions),
-              };
-            })
-            .filter(
-              (
-                transition,
-              ): transition is {
-                to: ApprovalStatus;
-                targetStageId: string;
-                targetStageName: string;
-                label?: string;
-                conditions: string[];
-              } => Boolean(transition),
-            );
-
-    const notification =
-      stage.notifySupervisor || stage.ccActor
-        ? {
-            subject: `${flowName} · ${stage.name}`,
-            body: `{{actorName}} progressed ${flowName} into the ${stage.name} stage for {{domainName}} · {{subdomainName}}.`,
-            sendToActorSupervisor: stage.notifySupervisor,
-            ccActor: stage.ccActor,
-          }
-        : undefined;
-
-    return {
-      id: stage.id,
-      status: stage.status,
-      name: stage.name,
-      description: stage.description,
-      actor: actor?.role ?? "Process Owner",
-      actorUserId: stage.actorUserId,
-      isFinal: stageIsFinal,
-      transitions,
-      notification,
-    };
+    nodeId: string | null;
+  }>({
+    isOpen: false,
+    x: 0,
+    y: 0,
+    nodeId: null,
   });
+  
+  // Get available subdomains based on selected domain
+  const availableSubdomains = useMemo(() => {
+    const domain = domains.find(d => d.id === currentDomainId);
+    return domain?.subdomains ?? [];
+  }, [currentDomainId, domains]);
 
-  const previewJson = useMemo(
-    () =>
-      JSON.stringify(
-        {
-          id: "builder-flow",
-          name: flowName,
-          version: flowVersion,
-          description: "Drafted via interactive canvas",
-          domain: selectedDomainId,
-          subdomain: selectedSubdomainId,
-          domainName: selectedDomain?.name ?? "",
-          subdomainName: selectedSubdomain?.name ?? "",
-          definition: { stages: stagePayload },
+  // Initialize from context or default
+  useEffect(() => {
+    if (initialFlowContext) {
+      const { flow } = initialFlowContext;
+      setFlowName(flow.name);
+      
+      // Map flow definition to nodes and edges
+      const stages = flow.definition.stages || [];
+      
+      // Get node positions from metadata if available
+      const savedPositions = flow.metadata?.layout?.nodes as Array<{ id: string; position: { x: number; y: number } }> || [];
+      const positionMap = new Map(savedPositions.map(n => [n.id, n.position]));
+      
+      // Create nodes from stages
+      const mappedNodes: Node<StageNodeData>[] = stages.map((stage, index) => ({
+        id: stage.id,
+        type: "stage",
+        position: positionMap.get(stage.id) || { x: 100 + (index * 250), y: 100 },
+        data: {
+          label: stage.name,
+          status: stage.status,
+          description: stage.description || "",
+          actorUserId: stage.actorUserId || users[0]?.id || "",
+          notifySupervisor: stage.notifySupervisor ?? false,
+          ccActor: stage.ccActor ?? false,
+          isFinal: isLockedFinalStatus(stage.status),
+          users,
+          onEdit: (id) => {
+            setSelectedStageId(id);
+            setIsStageModalOpen(true);
+          },
+          transitions: stage.transitions || [],
+          events: stage.events || [],
         },
-        null,
-        2,
-      ),
-    [
-      flowName,
-      flowVersion,
-      selectedDomainId,
-      selectedSubdomainId,
-      selectedDomain?.name,
-      selectedSubdomain?.name,
-      stagePayload,
-    ],
-  );
-
-  const workspaceWidth = Math.max(
-    CANVAS_WIDTH + WORKSPACE_BUFFER,
-    stageBounds.maxX + CARD_WIDTH + CANVAS_PADDING + WORKSPACE_BUFFER,
-  );
-  const workspaceHeight = Math.max(
-    CANVAS_HEIGHT + WORKSPACE_BUFFER,
-    stageBounds.maxY + CARD_HEIGHT + CANVAS_PADDING + WORKSPACE_BUFFER,
-  );
-
-  const handlePanStart = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!canvasRef.current) {
-      return;
-    }
-    const isMiddleClick = event.button === 1;
-    if (!isSpacePressed && !isMiddleClick) {
-      return;
-    }
-    event.preventDefault();
-    const pointerId = event.pointerId;
-    const originX = event.clientX - canvasPan.x;
-    const originY = event.clientY - canvasPan.y;
-    panOriginRef.current = { x: originX, y: originY };
-
-    const handlePointerMove = (moveEvent: PointerEvent) => {
-      if (moveEvent.pointerId !== pointerId) {
-        return;
-      }
-      setCanvasPan({
-        x: moveEvent.clientX - panOriginRef.current.x,
-        y: moveEvent.clientY - panOriginRef.current.y,
-      });
-    };
-
-    const handlePointerUp = (upEvent: PointerEvent) => {
-      if (upEvent.pointerId !== pointerId) {
-        return;
-      }
-      window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", handlePointerUp);
-    };
-
-    window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerup", handlePointerUp);
-  };
-
-  const startDragging = (stageId: string, event: ReactPointerEvent) => {
-    if (isSpacePressed) {
-      return;
-    }
-    const stage = stages.find((node) => node.id === stageId);
-    if (!stage || !canvasRef.current) {
-      return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-
-    const rect = canvasRef.current.getBoundingClientRect();
-    const offsetX =
-      (event.clientX - rect.left - canvasPan.x) / zoom - stage.position.x;
-    const offsetY =
-      (event.clientY - rect.top - canvasPan.y) / zoom - stage.position.y;
-
-    const handlePointerMove = (moveEvent: PointerEvent) => {
-      if (!canvasRef.current) {
-        return;
-      }
-      const bounds = canvasRef.current.getBoundingClientRect();
-      const canvasX =
-        (moveEvent.clientX - bounds.left - canvasPan.x) / zoom - offsetX;
-      const canvasY =
-        (moveEvent.clientY - bounds.top - canvasPan.y) / zoom - offsetY;
-
-      const maxX =
-        workspaceWidth - CARD_WIDTH - CANVAS_PADDING + WORKSPACE_BUFFER;
-      const maxY =
-        workspaceHeight - CARD_HEIGHT - CANVAS_PADDING + WORKSPACE_BUFFER;
-      const minX = CANVAS_PADDING;
-      const minY = CANVAS_PADDING;
-
-      setStages((prev) =>
-        prev.map((node) =>
-          node.id === stageId
-            ? {
-                ...node,
-                position: {
-                  x: clamp(canvasX, minX, maxX),
-                  y: clamp(canvasY, minY, maxY),
-                },
-              }
-            : node,
-        ),
-      );
-    };
-
-    const handlePointerUp = () => {
-      window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", handlePointerUp);
-    };
-
-    window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerup", handlePointerUp);
-  };
-
-  const handleStageChange = (stageId: string, updates: Partial<StageDraft>) => {
-    setStages((prev) =>
-      prev.map((stage) => {
-        if (stage.id !== stageId) {
-          return stage;
-        }
-        const nextStage: StageDraft = { ...stage, ...updates };
-        if (updates.status) {
-          if (isLockedFinalStatus(updates.status)) {
-            nextStage.isFinal = true;
-            nextStage.transitions = [];
-          } else if (
-            isLockedFinalStatus(stage.status) &&
-            !isLockedFinalStatus(updates.status) &&
-            nextStage.transitions.length === 0
-          ) {
-            nextStage.transitions = [createTransitionDraft()];
-          }
-        }
-        return nextStage;
-      }),
-    );
-  };
-
-  const addStage = () => {
-    const nextIndex = stages.length;
-    const lastStage = orderedStages[orderedStages.length - 1];
-    const lastStageIsFinal = lastStage ? isStageFinal(lastStage) : false;
-    const status: ApprovalStatus = lastStageIsFinal ? "in_process" : "approved";
-    const statusIsLocked = isLockedFinalStatus(status);
-    const newStage: StageDraft = {
-      id: createStageId(),
-      name: "New stage",
-      status,
-      description: "Describe the work performed in this step.",
-      actorUserId: lastStage?.actorUserId ?? users[0]?.id ?? "",
-      notifySupervisor: true,
-      ccActor: false,
-      isFinal: statusIsLocked,
-      transitions: statusIsLocked ? [] : [createTransitionDraft()],
-      position: stagePosition(nextIndex),
-    };
-
-    setStages((prev) => [...prev, newStage]);
-    setSelectedStageId(newStage.id);
-  };
-
-  const removeStage = (stageId: string) => {
-    if (stages.length <= 1) {
-      return;
-    }
-    setStages((prev) => {
-      const filtered = prev.filter((stage) => stage.id !== stageId);
-      const cleaned = filtered.map((stage) => ({
-        ...stage,
-        transitions: stage.transitions.filter(
-          (transition) => transition.targetStageId !== stageId,
-        ),
       }));
-      if (!cleaned.some((stage) => stage.id === selectedStageId)) {
-        setSelectedStageId(cleaned[cleaned.length - 1]?.id ?? "");
-      }
-      return cleaned;
-    });
-  };
-
-  useEffect(() => {
-    if (!linkSourceStageId) {
-      return;
-    }
-    const handleKeydown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setLinkSourceStageId(null);
-      }
-    };
-    window.addEventListener("keydown", handleKeydown);
-    return () => {
-      window.removeEventListener("keydown", handleKeydown);
-    };
-  }, [linkSourceStageId]);
-
-  useEffect(() => {
-    if (!jsonRecentlyUpdated) {
-      return;
-    }
-    const timeoutId = window.setTimeout(() => {
-      setJsonRecentlyUpdated(false);
-    }, 1500);
-    return () => {
-      window.clearTimeout(timeoutId);
-    };
-  }, [jsonRecentlyUpdated]);
-
-  const resetBuilder = () => {
-    applyPreset(currentPreset);
-    setCopied(false);
-    setIsStageModalOpen(false);
-    setIsJsonModalOpen(false);
-    setJsonRecentlyUpdated(false);
-  };
-
-  const copyJson = async () => {
-    try {
-      await navigator.clipboard.writeText(previewJson);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      setCopied(false);
-    }
-  };
-
-  const startLinkingFromStage = (stageId: string) => {
-    if (isSpacePressed) {
-      return;
-    }
-    const stage = stages.find((node) => node.id === stageId);
-    if (!stage || isStageFinal(stage)) {
-      return;
-    }
-    setLinkSourceStageId(stageId);
-  };
-
-  const startLinkDrag = (stageId: string, event: ReactPointerEvent) => {
-    if (isSpacePressed) {
-      return;
-    }
-    const stage = stages.find((node) => node.id === stageId);
-    if (!stage || isStageFinal(stage) || !canvasRef.current) {
-      return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-    setLinkSourceStageId(stageId);
-
-    const updatePreview = (clientX: number, clientY: number) => {
-      if (!canvasRef.current) {
-        return;
-      }
-      const rect = canvasRef.current.getBoundingClientRect();
-      setLinkPreview({
-        sourceStageId: stageId,
-        x: (clientX - rect.left - canvasPan.x) / zoom,
-        y: (clientY - rect.top - canvasPan.y) / zoom,
-      });
-    };
-
-    updatePreview(event.clientX, event.clientY);
-
-    const handlePointerMove = (moveEvent: PointerEvent) => {
-      updatePreview(moveEvent.clientX, moveEvent.clientY);
-    };
-
-    const handlePointerUp = (upEvent: PointerEvent) => {
-      window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", handlePointerUp);
-      setLinkPreview(null);
-      const targetStageElement = (upEvent.target as HTMLElement | null)?.closest(
-        "[data-stage-id]",
-      ) as HTMLElement | null;
-      const targetStageId = targetStageElement?.dataset.stageId;
-      if (targetStageId) {
-        connectStages(stageId, targetStageId);
-      } else {
-        setLinkSourceStageId(null);
-      }
-    };
-
-    window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerup", handlePointerUp);
-  };
-
-  const connectStages = (sourceStageId: string, targetStageId: string) => {
-    let didConnect = false;
-    setStages((prev) => {
-      const sourceStage = prev.find((stage) => stage.id === sourceStageId);
-      const targetStage = prev.find((stage) => stage.id === targetStageId);
-      if (
-        !sourceStage ||
-        !targetStage ||
-        sourceStage.id === targetStage.id ||
-        isStageFinal(sourceStage)
-      ) {
-        return prev;
-      }
-
-      const updatedStages = prev.map((stage) => {
-        if (stage.id !== sourceStageId) {
-          return stage;
-        }
-        let transitions = stage.transitions.map((transition) => ({
-          ...transition,
-        }));
-        if (
-          transitions.some(
-            (transition) => transition.targetStageId === targetStageId,
-          )
-        ) {
-          didConnect = true;
-          return {
-            ...stage,
-            transitions,
-          };
-        }
-
-        const emptyTransition = transitions.find(
-          (transition) => !transition.targetStageId,
-        );
-        if (emptyTransition) {
-          emptyTransition.targetStageId = targetStageId;
-          emptyTransition.targetStageName = targetStage?.name;
-          emptyTransition.targetStageStatus = targetStage?.status;
-          emptyTransition.label =
-            emptyTransition.label || `Route to ${targetStage.name}`;
-          didConnect = true;
-          return {
-            ...stage,
-            transitions,
-          };
-        }
-
-        if (transitions.length >= 2) {
-          return stage;
-        }
-
-        transitions = [
-          ...transitions,
-          createTransitionDraft({
-            targetStageId: targetStageId,
-            targetStageName: targetStage?.name,
-            targetStageStatus: targetStage?.status,
-            label: `Route to ${targetStage.name}`,
-          }),
-        ];
-        didConnect = true;
-        return {
-          ...stage,
-          transitions,
-        };
-      });
-
-      return updatedStages;
-    });
-
-    if (didConnect) {
-      setSelectedStageId(sourceStageId);
-      setJsonRecentlyUpdated(true);
-      setLinkSourceStageId(null);
-    }
-  };
-
-  const connectors = useMemo(() => {
-    const lines: {
-      id: string;
-      transitionId: string;
-      sourceStageId: string;
-      start: { x: number; y: number };
-      end: { x: number; y: number };
-    }[] = [];
-    stages.forEach((stage) => {
-      const stageIsFinal = isStageFinal(stage);
-      if (stageIsFinal) {
-        return;
-      }
-      stage.transitions.forEach((transition) => {
-        if (!transition.targetStageId) {
-          return;
-        }
-        const target = stageById.get(transition.targetStageId);
-        if (!target) {
-          return;
-        }
-        lines.push({
-          id: `${stage.id}-${transition.id}`,
-          transitionId: transition.id,
-          sourceStageId: stage.id,
-          start: {
-            x: stage.position.x + CARD_WIDTH,
-            y: stage.position.y + CARD_HEIGHT / 2,
-          },
-          end: {
-            x: target.position.x,
-            y: target.position.y + CARD_HEIGHT / 2,
-          },
+      
+      // Create edges from stage transitions and collect conditions
+      const mappedEdges: Edge[] = [];
+      const conditions: Record<string, { conditionGroups: ConditionGroup[]; isDefault: boolean }> = {};
+      
+      stages.forEach((stage) => {
+        stage.transitions?.forEach((transition) => {
+          if (transition.targetStageId) {
+            const edgeId = `${stage.id}-${transition.targetStageId}`;
+            mappedEdges.push({
+              id: edgeId,
+              source: stage.id,
+              target: transition.targetStageId,
+              type: "draggable",
+              animated: false,
+              style: { stroke: "#94a3b8", strokeWidth: 2 },
+              label: transition.label || transition.targetStageName || "",
+            });
+            
+            // Collect edge conditions
+            if (transition.conditionGroups || transition.isDefault !== undefined) {
+              conditions[edgeId] = {
+                conditionGroups: transition.conditionGroups || [],
+                isDefault: transition.isDefault ?? false,
+              };
+            }
+          }
         });
       });
-    });
-    return lines;
-  }, [stageById, stages]);
+      
+      // Set all state in one batch
+      setNodes(mappedNodes);
+      setEdges(mappedEdges);
+      setEdgeConditions(conditions);
+      setIsInitialized(true);
+    } else {
+      // Default initial state
+      const initialNodes: Node<StageNodeData>[] = [
+        {
+          id: "start",
+          type: "stage",
+          position: { x: 100, y: 100 },
+          data: {
+            label: "Draft business case",
+            status: "in_process",
+            description: "Initial draft stage",
+            actorUserId: users[0]?.id ?? "",
+            notifySupervisor: true,
+            ccActor: true,
+            isFinal: false,
+            users,
+            onEdit: (id) => {
+              setSelectedStageId(id);
+              setIsStageModalOpen(true);
+            },
+          },
+        },
+      ];
+      setNodes(initialNodes);
+      setIsInitialized(true);
+    }
+    // Only run on mount or when initialFlowContext changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialFlowContext?.flow.id]);
 
-  const handleStageCardClick = (stageId: string) => {
-    if (linkSourceStageId) {
-      connectStages(linkSourceStageId, stageId);
+
+
+
+  // Sync edges to node transitions (skip during initial load to prevent interference)
+  useEffect(() => {
+    if (!isInitialized) return;
+    
+    setNodes((nds) =>
+      nds.map((node) => {
+        const nodeTransitions = edges
+          .filter((edge) => edge.source === node.id)
+          .map((edge) => edge.target);
+
+        // Only update if changed to avoid infinite loops
+        const currentTransitions = node.data.transitions || [];
+        const hasChanged =
+          nodeTransitions.length !== currentTransitions.length ||
+          !nodeTransitions.every((t) => currentTransitions.includes(t));
+
+        if (hasChanged) {
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              transitions: nodeTransitions,
+            },
+          };
+        }
+        return node;
+      })
+    );
+  }, [edges, setNodes, isInitialized]);
+  const onConnect = useCallback(
+    (params: Connection) => {
+      setEdges((eds) => addEdge(params, eds));
+      setNodes((nds) =>
+        nds.map((node) => {
+          if (node.id === params.source) {
+            const currentTransitions = node.data.transitions || [];
+            if (!currentTransitions.includes(params.target)) {
+              return {
+                ...node,
+                data: {
+                  ...node.data,
+                  transitions: [...currentTransitions, params.target],
+                },
+              };
+            }
+          }
+          return node;
+        })
+      );
+    },
+    [setEdges, setNodes],
+  );
+
+
+  const handleStageEdit = useCallback((id: string) => {
+    setSelectedStageId(id);
+    setIsStageModalOpen(true);
+  }, []);
+
+  const onNodeContextMenu = useCallback((event: React.MouseEvent, node: Node) => {
+    event.preventDefault();
+    setContextMenu({
+      isOpen: true,
+      x: event.clientX,
+      y: event.clientY,
+      nodeId: node.id,
+    });
+  }, []);
+
+  const handleDeleteNode = useCallback(() => {
+    if (!contextMenu.nodeId) return;
+    
+    setNodes((nds) => nds.filter((node) => node.id !== contextMenu.nodeId));
+    setEdges((eds) => eds.filter((edge) => 
+      edge.source !== contextMenu.nodeId && edge.target !== contextMenu.nodeId
+    ));
+    setContextMenu({ isOpen: false, x: 0, y: 0, nodeId: null });
+  }, [contextMenu.nodeId, setNodes, setEdges]);
+
+  const handleEditNode = useCallback(() => {
+    if (!contextMenu.nodeId) return;
+    
+    setSelectedStageId(contextMenu.nodeId);
+    setIsStageModalOpen(true);
+    setContextMenu({ isOpen: false, x: 0, y: 0, nodeId: null });
+  }, [contextMenu.nodeId]);
+
+  // Close context menu when clicking outside
+  useEffect(() => {
+    const handleClick = () => {
+      if (contextMenu.isOpen) {
+        setContextMenu({ isOpen: false, x: 0, y: 0, nodeId: null });
+      }
+    };
+    
+    window.addEventListener('click', handleClick);
+    return () => window.removeEventListener('click', handleClick);
+  }, [contextMenu.isOpen]);
+
+  const onEdgeDoubleClick = useCallback((_event: React.MouseEvent, edge: Edge) => {
+    setSelectedEdgeId(edge.id);
+    setIsTransitionModalOpen(true);
+  }, []);
+
+  const handleConditionSave = useCallback(
+    (data: { conditionGroups: ConditionGroup[]; isDefault: boolean }) => {
+      if (!selectedEdgeId) return;
+
+      setEdgeConditions((prev) => ({
+        ...prev,
+        [selectedEdgeId]: data,
+      }));
+    },
+    [selectedEdgeId]
+  );
+
+
+
+  // Update node data when users or handleStageEdit changes
+  useEffect(() => {
+    setNodes((nds) =>
+      nds.map((node) => ({
+        ...node,
+        data: {
+          ...node.data,
+          users,
+          onEdit: handleStageEdit,
+        },
+      }))
+    );
+  }, [users, handleStageEdit, setNodes]);
+
+  const [isJsonModalOpen, setIsJsonModalOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const previewJson = useMemo(() => {
+    const flowData = {
+      name: flowName,
+      nodes: nodes.map(({ id, position, data }) => ({
+        id,
+        position,
+        data: {
+          label: data.label,
+          status: data.status,
+          description: data.description,
+          actorUserId: data.actorUserId,
+          notifySupervisor: data.notifySupervisor,
+          ccActor: data.ccActor,
+          isFinal: data.isFinal,
+        },
+      })),
+      edges,
+    };
+    return JSON.stringify(flowData, null, 2);
+  }, [flowName, nodes, edges]);
+
+  const copyJson = () => {
+    navigator.clipboard.writeText(previewJson);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const { screenToFlowPosition } = useReactFlow();
+
+  const onDragOver = useCallback((event: React.DragEvent) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+  }, []);
+
+  const onDrop = useCallback(
+    (event: React.DragEvent) => {
+      event.preventDefault();
+
+      const templateData = event.dataTransfer.getData('stage-template');
+      if (!templateData) return;
+
+      const template = JSON.parse(templateData);
+
+      // Validate unique terminal nodes (draft, approved, rejected)
+      if (template.id === 'draft') {
+        const hasDraft = nodes.some(node => node.data.label.toLowerCase() === 'draft');
+        if (hasDraft) {
+          setAlertModal({
+            isOpen: true,
+            title: 'Validation Error',
+            message: 'Flow can only have one Draft node',
+            type: 'warning',
+          });
+          return;
+        }
+      }
+
+      if (template.status === 'approved') {
+        const hasApproved = nodes.some(node => node.data.status === 'approved');
+        if (hasApproved) {
+          setAlertModal({
+            isOpen: true,
+            title: 'Validation Error',
+            message: 'Flow can only have one Approved node',
+            type: 'warning',
+          });
+          return;
+        }
+      }
+
+      if (template.status === 'reject') {
+        const hasRejected = nodes.some(node => node.data.status === 'reject');
+        if (hasRejected) {
+          setAlertModal({
+            isOpen: true,
+            title: 'Validation Error',
+            message: 'Flow can only have one Rejected node',
+            type: 'warning',
+          });
+          return;
+        }
+      }
+
+      // Use ReactFlow's screenToFlowPosition for accurate positioning
+      const position = screenToFlowPosition({
+        x: event.clientX,
+        y: event.clientY,
+      });
+
+      const id = createStageId();
+      const newNode: Node<StageNodeData> = {
+        id,
+        type: 'stage',
+        position,
+        data: {
+          label: template.label,
+          status: template.status,
+          description: template.description,
+          actorUserId: users[0]?.id ?? '',
+          notifySupervisor: false,
+          ccActor: false,
+          isFinal: template.status === 'approved' || template.status === 'end',
+          users,
+          onEdit: handleStageEdit,
+        },
+      };
+
+      setNodes((nds) => [...nds, newNode]);
+    },
+    [users, handleStageEdit, setNodes, nodes, screenToFlowPosition, setAlertModal]
+  );
+
+  const validateFlow = useCallback(() => {
+    const errors: string[] = [];
+
+    // Check for orphaned nodes (no incoming or outgoing connections)
+    const connectedNodes = new Set<string>();
+    edges.forEach((edge) => {
+      connectedNodes.add(edge.source);
+      connectedNodes.add(edge.target);
+    });
+
+    const orphanedNodes = nodes.filter(
+      (node) => !connectedNodes.has(node.id) && nodes.length > 1
+    );
+
+    if (orphanedNodes.length > 0) {
+      errors.push(
+        `Orphaned nodes detected: ${orphanedNodes.map((n) => n.data.label).join(', ')}`
+      );
+    }
+
+    // Check for at least one node
+    if (nodes.length === 0) {
+      errors.push('Flow must have at least one stage');
+    }
+
+    return { isValid: errors.length === 0, errors };
+  }, [nodes, edges]);
+
+  const handleSave = useCallback(async () => {
+    const validation = validateFlow();
+
+    if (!validation.isValid) {
+      setAlertModal({
+        isOpen: true,
+        title: 'Validation Error',
+        message: `Cannot save flow:\n\n${validation.errors.join('\n')}`,
+        type: 'error',
+      });
       return;
     }
-    setSelectedStageId(stageId);
-  };
 
-  const handleStageCardDoubleClick = (stageId: string) => {
-    setSelectedStageId(stageId);
-    setIsStageModalOpen(true);
-  };
+    // Validate domain and subdomain selection
+    if (!currentDomainId || !currentSubdomainId) {
+      setAlertModal({
+        isOpen: true,
+        title: 'Missing Selection',
+        message: 'Please select both a domain and subdomain before saving the flow.',
+        type: 'warning',
+      });
+      return;
+    }
+
+    // Generate the flow definition
+    const flowDefinition = {
+      stages: nodes.map((node) => {
+        // Get edges for this node to build proper transitions
+        const nodeEdges = edges.filter(edge => edge.source === node.id);
+        const transitions: FlowTransition[] = nodeEdges.map(edge => {
+          const targetNode = nodes.find(n => n.id === edge.target);
+          const edgeCondition = edgeConditions[edge.id];
+          
+          return {
+            to: targetNode?.data.status || "in_process",
+            targetStageId: edge.target,
+            targetStageName: targetNode?.data.label || "",
+            targetStageStatus: targetNode?.data.status,
+            label: (typeof edge.label === 'string' ? edge.label : '') || targetNode?.data.label || "",
+            conditionGroups: edgeCondition?.conditionGroups || [],
+            isDefault: edgeCondition?.isDefault ?? false,
+          };
+        });
+        
+        return {
+          id: node.id,
+          name: node.data.label,
+          status: node.data.status,
+          description: node.data.description,
+          actorUserId: node.data.actorUserId,
+          notifySupervisor: node.data.notifySupervisor,
+          ccActor: node.data.ccActor,
+          isFinal: node.data.isFinal,
+          events: node.data.events || [],
+          transitions,
+        };
+      }),
+    };
+
+    const flowData = {
+      name: flowName,
+      version: initialFlowContext?.flow.version || '1.0.0',
+      description: 'Created with visual workflow designer',
+      subdomainId: currentSubdomainId,
+      definition: flowDefinition,
+      metadata: {
+        layout: {
+          nodes: nodes.map(({ id, position }) => ({ id, position })),
+        },
+      },
+    };
+
+    try {
+      const url = initialFlowContext
+        ? `/api/flows/${initialFlowContext.flow.id}`
+        : '/api/flows';
+      
+      const method = initialFlowContext ? 'PUT' : 'POST';
+
+      const response = await fetch(url, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(flowData),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to save flow: ${response.statusText}`);
+      }
+
+      const savedFlow = await response.json();
+      console.log('Saved flow:', savedFlow);
+      
+      setAlertModal({
+        isOpen: true,
+        title: 'Success',
+        message: initialFlowContext 
+          ? 'Flow updated successfully!' 
+          : 'Flow created successfully!',
+        type: 'success',
+      });
+      
+      // If creating a new flow, update to edit mode without redirecting
+      if (!initialFlowContext && savedFlow) {
+        // Update URL without page reload to show we're now editing
+        window.history.replaceState(null, '', `/dashboard/rules/${savedFlow.id}/edit`);
+      }
+    } catch (error) {
+      console.error('Error saving flow:', error);
+      setAlertModal({
+        isOpen: true,
+        title: 'Error',
+        message: `Error saving flow: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        type: 'error',
+      });
+    }
+  }, [flowName, nodes, validateFlow, currentDomainId, currentSubdomainId, initialFlowContext]);
 
   return (
-    <section className="flex flex-col gap-6 bg-white p-6 shadow-sm">
-      <header className="flex flex-col gap-3 border-b border-slate-100 pb-4 lg:flex-row lg:items-center lg:justify-between">
-        <div>
-          <h2 className="text-lg font-semibold text-slate-900">
-            {isEditing ? "Edit flow blueprint" : "Builder canvas"}
-          </h2>
-          <p className="text-sm text-slate-500">
-            Arrange stages like n8n nodes—drag to reorder, zoom the canvas, and
-            configure metadata per node.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={resetBuilder}
-            className="inline-flex items-center rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-600 transition hover:bg-slate-100"
-          >
-            Reset
-          </button>
-          <button
-            type="button"
-            onClick={() => setIsJsonModalOpen(true)}
-            className="inline-flex items-center rounded-lg border border-slate-900 bg-slate-900 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-white transition hover:bg-slate-700"
-          >
-            View JSON
-          </button>
-          {jsonRecentlyUpdated ? (
-            <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-emerald-700">
-              JSON updated
-            </span>
-          ) : null}
-        </div>
-      </header>
-
-      <div className="flex flex-col gap-6">
-        <div className="space-y-4">
-          <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-              <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                Flow name
-                <input
-                  type="text"
-                  value={flowName}
-                  onChange={(event) => setFlowName(event.target.value)}
-                  className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
-                />
-              </label>
-              <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                Version
-                <input
-                  type="text"
-                  value={flowVersion}
-                  onChange={(event) => setFlowVersion(event.target.value)}
-                  className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
-                />
-              </label>
-              <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                Domain
-                <select
-                  value={selectedDomainId}
-                  onChange={(event) => handleDomainChange(event.target.value)}
-                  className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
-                >
-                  {domains.map((domain) => (
-                    <option key={domain.id} value={domain.id}>
-                      {domain.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                Subdomain
-                <select
-                  value={selectedSubdomain?.id ?? ""}
-                  onChange={(event) => handleSubdomainChange(event.target.value)}
-                  className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
-                  disabled={!subdomainOptions.length}
-                >
-                  {subdomainOptions.map((subdomain) => (
-                    <option key={subdomain.id} value={subdomain.id}>
-                      {subdomain.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
+    <section className="flex h-[calc(100vh-100px)]">
+      <StageSidebar />
+      <div className="flex flex-1 flex-col">
+        <header className="border-b border-slate-200 bg-white px-6 py-4">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h1 className="text-xl font-bold text-slate-900">{flowName}</h1>
+              <p className="text-sm text-slate-500">
+                Click edge → Drag label or blue dot → Double-click to edit → Delete to remove
+              </p>
             </div>
-            <div className="mt-4 flex flex-wrap items-center gap-3">
-              <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                Zoom
-                <button
-                  type="button"
-                  onClick={() => setZoom((value) => clamp(value - 0.1, 0.6, 1.4))}
-                  className="h-6 w-6 rounded-full border border-slate-200 text-base text-slate-700"
-                >
-                  −
-                </button>
-                <input
-                  type="range"
-                  min={0.6}
-                  max={1.4}
-                  step={0.05}
-                  value={zoom}
-                  onChange={(event) => setZoom(Number(event.target.value))}
-                  className="h-1 w-40 accent-emerald-500"
+            <div className="flex gap-2">
+              {initialFlowContext && (
+                <VersionHistory
+                  flowId={initialFlowContext.flow.id}
+                  currentVersion={initialFlowContext.flow.version}
+                  onRestore={() => {
+                    // Reload the page to fetch the restored version
+                    window.location.reload();
+                  }}
                 />
-                <button
-                  type="button"
-                  onClick={() => setZoom((value) => clamp(value + 0.1, 0.6, 1.4))}
-                  className="h-6 w-6 rounded-full border border-slate-200 text-base text-slate-700"
-                >
-                  +
-                </button>
-                <span className="text-slate-700">{(zoom * 100).toFixed(0)}%</span>
-              </div>
+              )}
               <button
-                type="button"
-                onClick={addStage}
-                className="inline-flex items-center rounded-full border border-emerald-200 bg-white px-4 py-2 text-xs font-semibold uppercase tracking-wide text-emerald-700 shadow-sm transition hover:bg-emerald-50"
+                onClick={() => setIsJsonModalOpen(true)}
+                className="rounded-lg bg-slate-100 px-4 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-200"
               >
-                + Add stage
+                View JSON
               </button>
               <button
-                type="button"
-                onClick={() => setIsStageModalOpen(true)}
-                className="inline-flex items-center rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-700 shadow-sm transition hover:bg-slate-100"
+                onClick={handleSave}
+                className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-emerald-600"
               >
-                Stage editor
+                💾 Save Flow
               </button>
-              {linkSourceStageId ? (
-                <div className="inline-flex items-center gap-2 rounded-full border border-amber-200 bg-white px-4 py-2 text-xs font-semibold uppercase tracking-wide text-amber-700 shadow-sm">
-                  <span>
-                    Linking from{" "}
-                    {
-                      stages.find((stage) => stage.id === linkSourceStageId)
-                        ?.name
-                    }
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setLinkSourceStageId(null)}
-                    className="text-slate-500 hover:text-slate-900"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              ) : null}
             </div>
-            <p className="mt-3 text-xs text-slate-500">
-              Tip: drag the ● handle on a node to connect it to another node,
-              double-click a dashed connector to unlink, and hold Space + drag
-              anywhere on the canvas to pan when you need extra room.
-            </p>
           </div>
+          
+          {/* Domain and Subdomain Selection */}
+          <div className="flex gap-4 items-center">
+            <div className="flex-1">
+              <label className="block text-xs font-medium text-slate-700 mb-1">
+                Domain
+              </label>
+              <select
+                value={currentDomainId}
+                onChange={(e) => {
+                  setCurrentDomainId(e.target.value);
+                  setCurrentSubdomainId(""); // Reset subdomain when domain changes
+                }}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              >
+                <option value="">Select a domain...</option>
+                {domains.map((domain) => (
+                  <option key={domain.id} value={domain.id}>
+                    {domain.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            
+            <div className="flex-1">
+              <label className="block text-xs font-medium text-slate-700 mb-1">
+                Subdomain
+              </label>
+              <select
+                value={currentSubdomainId}
+                onChange={(e) => setCurrentSubdomainId(e.target.value)}
+                disabled={!currentDomainId || availableSubdomains.length === 0}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:bg-slate-100 disabled:cursor-not-allowed"
+              >
+                <option value="">Select a subdomain...</option>
+                {availableSubdomains.map((subdomain) => (
+                  <option key={subdomain.id} value={subdomain.id}>
+                    {subdomain.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            
+            <div className="flex-1">
+              <label className="block text-xs font-medium text-slate-700 mb-1">
+                Flow Name
+              </label>
+              <input
+                type="text"
+                value={flowName}
+                onChange={(e) => setFlowName(e.target.value)}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                placeholder="Enter flow name..."
+              />
+            </div>
+          </div>
+        </header>
 
-          <div
-            ref={canvasRef}
-            onPointerDown={handlePanStart}
-            className="relative h-[560px] w-full overflow-hidden border border-slate-900/40 bg-slate-950 text-white shadow-inner"
+        <div className="flex-1 w-full h-full bg-slate-50">
+          <ReactFlow
+            nodes={nodes}
+            edges={edges.map((edge) => {
+              const hasConditions = edgeConditions[edge.id]?.conditionGroups?.length > 0;
+              const isDefault = edgeConditions[edge.id]?.isDefault;
+
+              // Determine label text
+              let label: string;
+              if (isDefault) {
+                label = "DEFAULT";
+              } else if (hasConditions) {
+                label = `${edgeConditions[edge.id].conditionGroups.length} rule(s)`;
+              } else {
+                label = "Click to add condition";
+              }
+
+              // Determine colors based on edge type
+              let strokeColor: string;
+              let labelColor: string;
+              let labelBgColor: string;
+
+              if (isDefault) {
+                strokeColor = '#6366f1'; // Indigo for default
+                labelColor = '#4f46e5';
+                labelBgColor = '#e0e7ff';
+              } else if (hasConditions) {
+                strokeColor = '#059669'; // Emerald for conditional
+                labelColor = '#059669';
+                labelBgColor = '#d1fae5';
+              } else {
+                strokeColor = '#94a3b8'; // Slate for unconfigured
+                labelColor = '#64748b';
+                labelBgColor = '#f1f5f9';
+              }
+
+              return {
+                ...edge,
+                type: 'draggable', // Use draggable edge type
+                animated: isDefault,
+                data: {
+                  ...edge.data,
+                  label,
+                  labelColor,
+                  labelBgColor,
+                  strokeColor,
+                  animated: isDefault,
+                },
+                style: {
+                  stroke: strokeColor,
+                  strokeWidth: 2,
+                },
+              };
+            })}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onConnect={onConnect}
+            onEdgeDoubleClick={onEdgeDoubleClick}
+            onNodeContextMenu={onNodeContextMenu}
+            onDragOver={onDragOver}
+            onDrop={onDrop}
+            nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
+            connectionLineType={ConnectionLineType.SmoothStep}
+            defaultEdgeOptions={{
+              type: 'draggable',
+              animated: false,
+            }}
+            deleteKeyCode="Delete"
+            fitView
+            minZoom={0.5}
+            maxZoom={2}
           >
+            <Background color="#cbd5e1" gap={16} />
+            <Controls className="bg-white border border-slate-200 shadow-sm rounded-lg overflow-hidden" />
+            <MiniMap
+              position="bottom-right"
+              className="!bottom-4 !right-4 border border-slate-200 shadow-sm rounded-lg overflow-hidden bg-white"
+              nodeColor={(n: Node) => {
+                if (n.type === "stage") return "#10b981";
+                return "#eee";
+              }}
+              style={{ width: 200, height: 150 }}
+            />
+          </ReactFlow>
+          
+          {/* Context Menu */}
+          {contextMenu.isOpen && (
             <div
-              className="absolute left-0 top-0"
+              className="fixed z-50 bg-white border border-slate-200 shadow-lg rounded-lg overflow-hidden min-w-[140px]"
               style={{
-                width: workspaceWidth,
-                height: workspaceHeight,
-                transform: `translate(${canvasPan.x}px, ${canvasPan.y}px) scale(${zoom})`,
-                transformOrigin: "top left",
+                left: `${contextMenu.x}px`,
+                top: `${contextMenu.y}px`,
               }}
             >
-              <div
-                className="absolute inset-0 opacity-60"
-                style={{
-                  backgroundImage:
-                    "radial-gradient(circle at 1px 1px, rgba(148,163,184,0.35) 1px, transparent 0)",
-                  backgroundSize: "32px 32px",
-                  pointerEvents: "none",
-                }}
-              />
-              <div className="absolute inset-0">
-                <svg
-                  width={workspaceWidth}
-                  height={workspaceHeight}
-                  className="absolute inset-0"
-                >
-                  {connectors.map((connector) => (
-                    <line
-                      key={connector.id}
-                      x1={connector.start.x}
-                      y1={connector.start.y}
-                      x2={connector.end.x}
-                      y2={connector.end.y}
-                      stroke="rgba(16, 185, 129, 0.6)"
-                      strokeWidth={3}
-                      strokeLinecap="round"
-                      strokeDasharray="6 6"
-                      pointerEvents="stroke"
-                      className="cursor-pointer transition hover:stroke-emerald-300"
-                      onDoubleClick={() =>
-                        disconnectTransition(
-                          connector.sourceStageId,
-                          connector.transitionId,
-                        )
-                      }
-                    />
-                  ))}
-                  {linkPreview && stageById.has(linkPreview.sourceStageId) ? (
-                    <line
-                      x1={
-                        (stageById.get(linkPreview.sourceStageId)?.position.x ?? 0) +
-                        CARD_WIDTH
-                      }
-                      y1={
-                        (stageById.get(linkPreview.sourceStageId)?.position.y ?? 0) +
-                        CARD_HEIGHT / 2
-                      }
-                      x2={linkPreview.x}
-                      y2={linkPreview.y}
-                      stroke="rgba(248, 250, 252, 0.7)"
-                      strokeWidth={3}
-                      strokeLinecap="round"
-                      strokeDasharray="4 4"
-                      pointerEvents="none"
-                    />
-                  ) : null}
+              <button
+                onClick={handleEditNode}
+                className="w-full px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 transition-colors flex items-center gap-2"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                 </svg>
-                {stages.map((stage) => {
-                  const isSelected = selectedStageId === stage.id;
-                  const actor = userMap[stage.actorUserId];
-                  const isFinal = isStageFinal(stage);
-                  const statusLabel = STATUS_LABELS[stage.status] ?? stage.status;
-                  const isLinkSource = linkSourceStageId === stage.id;
-                const isLinkTargetCandidate =
-                  Boolean(linkSourceStageId) &&
-                  linkSourceStageId !== stage.id &&
-                  !isLinkSource;
-                return (
-                  <div
-                    key={stage.id}
-                    data-stage-id={stage.id}
-                    style={{
-                      position: "absolute",
-                      left: stage.position.x,
-                      top: stage.position.y,
-                      width: CARD_WIDTH,
-                    }}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => handleStageCardClick(stage.id)}
-                      onDoubleClick={(event) => {
-                        event.preventDefault();
-                        handleStageCardDoubleClick(stage.id);
-                      }}
-                      className={[
-                        "group flex h-[150px] flex-col gap-2 rounded-2xl border px-4 py-3 text-left shadow-xl transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300",
-                        isSelected
-                          ? "border-emerald-400 bg-emerald-400/10"
-                          : "border-white/20 bg-white/5 hover:border-emerald-200/70",
-                        isLinkSource
-                          ? "ring-2 ring-amber-300 border-amber-200/80"
-                          : "",
-                        isLinkTargetCandidate
-                          ? "border-emerald-300/70"
-                          : "",
-                      ].join(" ")}
-                    >
-                      <div className="flex items-center justify-between text-[10px] font-semibold uppercase tracking-wide text-slate-300">
-                        <span>
-                          {statusLabel}
-                          {isFinal ? " · Final" : ""}
-                        </span>
-                        <div className="flex items-center gap-1">
-                          <span
-                            role="button"
-                            tabIndex={isFinal ? -1 : 0}
-                            aria-disabled={isFinal}
-                            title="Drag to connect"
-                            onPointerDown={(event) => {
-                              if (isFinal) {
-                                return;
-                              }
-                              startLinkDrag(stage.id, event);
-                            }}
-                            onClick={(event) => {
-                              if (isFinal) {
-                                return;
-                              }
-                              event.stopPropagation();
-                              startLinkingFromStage(stage.id);
-                            }}
-                            onKeyDown={(event) => {
-                              if (
-                                isFinal ||
-                                (event.key !== "Enter" && event.key !== " ")
-                              ) {
-                                return;
-                              }
-                              event.preventDefault();
-                              startLinkingFromStage(stage.id);
-                            }}
-                            className={[
-                              "flex h-5 w-5 cursor-pointer items-center justify-center rounded-full border text-white transition focus:outline-none focus:ring-2 focus:ring-emerald-300",
-                              isLinkSource
-                                ? "border-emerald-300 bg-emerald-400"
-                                : "border-white/30 bg-white/15 hover:bg-white/30",
-                              isFinal ? "pointer-events-none opacity-50" : "",
-                            ].join(" ")}
-                          >
-                            <span className="text-[9px] font-black leading-none">
-                              ●
-                            </span>
-                          </span>
-                          <span
-                            className="cursor-grab rounded-full border border-white/20 bg-white/10 px-2 py-0.5 text-[9px] text-slate-200 active:cursor-grabbing"
-                            onPointerDown={(event) => startDragging(stage.id, event)}
-                          >
-                            Drag
-                          </span>
-                        </div>
-                      </div>
-                      <div>
-                        <p className="text-base font-semibold text-white">
-                          {stage.name}
-                        </p>
-                        <p className="text-xs text-slate-300">
-                          {stage.description}
-                        </p>
-                      </div>
-                      <div className="text-xs text-slate-300">
-                        Actor:{" "}
-                        <span className="text-slate-100">
-                          {actor?.name ?? "Unassigned"}
-                        </span>
-                      </div>
-                      <div className="mt-auto text-[10px] font-semibold uppercase tracking-wide text-emerald-300">
-                        {stage.notifySupervisor ? "Notifies supervisor" : "Silent"}
-                      </div>
-                    </button>
-                  </div>
-                );
-                })}
-              </div>
+                Edit
+              </button>
+              <div className="border-t border-slate-100"></div>
+              <button
+                onClick={handleDeleteNode}
+                className="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50 transition-colors flex items-center gap-2"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+                Delete
+              </button>
             </div>
-          </div>
+          )}
         </div>
-
       </div>
 
-      {isStageModalOpen ? (
+      {/* Stage Editor Modal */}
+      {isStageModalOpen && selectedStageId && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 px-4"
           onClick={() => setIsStageModalOpen(false)}
         >
           <div
-            className="relative w-full max-w-5xl rounded-3xl border border-slate-200 bg-white shadow-2xl"
+            className="relative flex max-h-[90vh] w-full max-w-6xl flex-col rounded-3xl border border-slate-200 bg-white shadow-2xl"
             onClick={(event) => event.stopPropagation()}
           >
             <header className="flex flex-col gap-2 border-b border-slate-100 px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-                  Stage editor & summary
+                  Stage editor
                 </p>
                 <h3 className="text-lg font-semibold text-slate-900">
                   Configure node metadata
@@ -1453,25 +872,39 @@ export function RuleBuilder({
                 Close
               </button>
             </header>
-            <div className="grid gap-6 p-6 lg:grid-cols-2">
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                {selectedStage ? (() => {
-                  const stageIsFinal = isStageFinal(selectedStage);
-                  const statusLockedFinal = isLockedFinalStatus(
-                    selectedStage.status,
+            <div className="grid gap-6 overflow-y-auto p-6 lg:grid-cols-2">
+              {(() => {
+                const selectedNode = nodes.find((n) => n.id === selectedStageId);
+                if (!selectedNode) return null;
+
+                const stage = selectedNode.data;
+                const stageIsFinal = stage.isFinal;
+                const statusLockedFinal = isLockedFinalStatus(stage.status);
+
+                const updateStage = (updates: Partial<StageNodeData>) => {
+                  setNodes((nds) =>
+                    nds.map((node) => {
+                      if (node.id === selectedStageId) {
+                        return {
+                          ...node,
+                          data: { ...node.data, ...updates },
+                        };
+                      }
+                      return node;
+                    })
                   );
-                  return (
-                    <div className="space-y-4 text-sm text-slate-700">
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                          Stage name
+                };
+
+                return (
+                  <div className="space-y-4 text-sm text-slate-700">
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        Stage name
                         <input
                           type="text"
-                          value={selectedStage.name}
+                          value={stage.label}
                           onChange={(event) =>
-                            handleStageChange(selectedStage.id, {
-                              name: event.target.value,
-                            })
+                            updateStage({ label: event.target.value })
                           }
                           className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
                         />
@@ -1479,11 +912,9 @@ export function RuleBuilder({
                       <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                         Status
                         <select
-                          value={selectedStage.status}
+                          value={stage.status}
                           onChange={(event) =>
-                            handleStageChange(selectedStage.id, {
-                              status: event.target.value as ApprovalStatus,
-                            })
+                            updateStage({ status: event.target.value as ApprovalStatus })
                           }
                           className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
                         >
@@ -1498,11 +929,9 @@ export function RuleBuilder({
                     <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                       Description
                       <textarea
-                        value={selectedStage.description}
+                        value={stage.description}
                         onChange={(event) =>
-                          handleStageChange(selectedStage.id, {
-                            description: event.target.value,
-                          })
+                          updateStage({ description: event.target.value })
                         }
                         rows={3}
                         className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
@@ -1511,11 +940,9 @@ export function RuleBuilder({
                     <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                       Actor
                       <select
-                        value={selectedStage.actorUserId}
+                        value={stage.actorUserId}
                         onChange={(event) =>
-                          handleStageChange(selectedStage.id, {
-                            actorUserId: event.target.value,
-                          })
+                          updateStage({ actorUserId: event.target.value })
                         }
                         className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
                       >
@@ -1534,127 +961,19 @@ export function RuleBuilder({
                           checked={stageIsFinal}
                           disabled={statusLockedFinal}
                           onChange={(event) =>
-                            toggleFinalState(selectedStage, event.target.checked)
+                            updateStage({ isFinal: event.target.checked })
                           }
                           className="h-4 w-4 rounded border border-slate-300 text-emerald-600 focus:ring-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
                         />
                       </label>
                       {statusLockedFinal ? (
                         <p className="mt-1 text-[11px] font-normal text-slate-500">
-                          Approved and End nodes always complete the flow and cannot
-                          branch forward.
+                          Approved and End nodes always complete the flow.
                         </p>
                       ) : (
                         <p className="mt-1 text-[11px] font-normal text-slate-500">
-                          Final states complete the flow and cannot branch to other
-                          statuses.
+                          Final states complete the flow.
                         </p>
-                      )}
-                    </div>
-                    <div className="rounded-2xl border border-slate-200 bg-white/80 p-3">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                          Transition branches
-                        </h4>
-                        <button
-                          type="button"
-                          onClick={() => addTransitionBranch(selectedStage.id)}
-                          className="inline-flex items-center rounded-full border border-emerald-200 bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-emerald-700 shadow-sm transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50"
-                          disabled={
-                            stageIsFinal ||
-                            selectedStage.transitions.length >= 2
-                          }
-                        >
-                          + Add branch
-                        </button>
-                      </div>
-                      {stageIsFinal ? (
-                        <p className="mt-3 text-xs text-slate-500">
-                          Final stages do not support outgoing transitions.
-                        </p>
-                      ) : selectedStage.transitions.length === 0 ? (
-                        <p className="mt-3 text-xs text-slate-500">
-                          No branches configured. Add a branch to route this stage
-                          forward.
-                        </p>
-                      ) : (
-                        <div className="mt-3 space-y-3">
-                          {selectedStage.transitions.map((branch, branchIndex) => (
-                            <div
-                              key={branch.id}
-                              className="space-y-3 rounded-xl border border-slate-200 bg-white p-3"
-                            >
-                              <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                                <span>Branch {branchIndex + 1}</span>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    removeTransitionBranch(selectedStage.id, branch.id)
-                                  }
-                                  className="text-rose-500 hover:text-rose-600 disabled:opacity-50"
-                                  disabled={selectedStage.transitions.length <= 1}
-                                >
-                                  Remove
-                                </button>
-                              </div>
-                              <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                                Destination stage
-                                <select
-                                  value={branch.targetStageId ?? ""}
-                                  onChange={(event) =>
-                                    setTransitionTargetStage(
-                                      selectedStage.id,
-                                      branch.id,
-                                      event.target.value || null,
-                                    )
-                                  }
-                                  className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
-                                >
-                                  <option value="">Select destination</option>
-                                  {stages
-                                    .filter((candidate) => candidate.id !== selectedStage.id)
-                                    .map((candidate) => {
-                                      const candidateIsFinal = isStageFinal(candidate);
-                                      const candidateStatusLabel =
-                                        STATUS_LABELS[candidate.status] ?? candidate.status;
-                                      return (
-                                        <option key={`${branch.id}-${candidate.id}`} value={candidate.id}>
-                                          {candidate.name} · {candidateStatusLabel}
-                                          {candidateIsFinal ? " (final)" : ""} · {candidate.id}
-                                        </option>
-                                      );
-                                    })}
-                                </select>
-                              </label>
-                              <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                                Branch label
-                                <input
-                                  type="text"
-                                  value={branch.label}
-                                  onChange={(event) =>
-                                    updateTransitionBranch(selectedStage.id, branch.id, {
-                                      label: event.target.value,
-                                    })
-                                  }
-                                  className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
-                                />
-                              </label>
-                              <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                                Conditions (one per line)
-                                <textarea
-                                  value={branch.conditions}
-                                  onChange={(event) =>
-                                    updateTransitionBranch(selectedStage.id, branch.id, {
-                                      conditions: event.target.value,
-                                    })
-                                  }
-                                  rows={3}
-                                  className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
-                                />
-                              </label>
-                            </div>
-                          ))}
-                        </div>
                       )}
                     </div>
                     <div className="space-y-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
@@ -1662,11 +981,9 @@ export function RuleBuilder({
                       <label className="flex items-center gap-2 text-[11px] text-slate-600">
                         <input
                           type="checkbox"
-                          checked={selectedStage.notifySupervisor}
+                          checked={stage.notifySupervisor}
                           onChange={(event) =>
-                            handleStageChange(selectedStage.id, {
-                              notifySupervisor: event.target.checked,
-                            })
+                            updateStage({ notifySupervisor: event.target.checked })
                           }
                           className="h-4 w-4 rounded border border-slate-300 text-emerald-600 focus:ring-emerald-500"
                         />
@@ -1675,97 +992,156 @@ export function RuleBuilder({
                       <label className="flex items-center gap-2 text-[11px] text-slate-600">
                         <input
                           type="checkbox"
-                          checked={selectedStage.ccActor}
+                          checked={stage.ccActor}
                           onChange={(event) =>
-                            handleStageChange(selectedStage.id, {
-                              ccActor: event.target.checked,
-                            })
+                            updateStage({ ccActor: event.target.checked })
                           }
                           className="h-4 w-4 rounded border border-slate-300 text-emerald-600 focus:ring-emerald-500"
                         />
                         CC actor
                       </label>
                     </div>
-                    <div className="flex justify-end">
-                      <button
-                        type="button"
-                        onClick={() => removeStage(selectedStage.id)}
-                        disabled={stages.length <= 1}
-                        className="inline-flex items-center rounded-lg border border-rose-200 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-rose-600 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        Remove stage
-                      </button>
-                    </div>
-                    </div>
-                  );
-                })() : (
-                  <p className="text-sm text-slate-500">
-                    Select a node on the canvas to edit metadata.
-                  </p>
-                )}
-              </div>
-              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                <h4 className="text-sm font-semibold text-slate-800">
-                  Stage summary
-                </h4>
-                <ul className="mt-4 space-y-3 text-sm">
-                  {orderedStages.map((stage, index) => {
-                    const isActive = selectedStageId === stage.id;
-                    const isFinal = isStageFinal(stage);
-                    const statusLabel = STATUS_LABELS[stage.status] ?? stage.status;
-                    return (
-                      <li key={stage.id}>
+
+                    <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                          Event Publishing
+                        </h4>
                         <button
                           type="button"
-                          onClick={() => setSelectedStageId(stage.id)}
-                          className={[
-                            "w-full rounded-xl border px-4 py-3 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300",
-                            isActive
-                              ? "border-emerald-300 bg-emerald-50 shadow-sm"
-                              : "border-slate-100 bg-slate-50 hover:border-emerald-200",
-                          ].join(" ")}
+                          onClick={() => {
+                            const newEvent: StageEvent = {
+                              id: crypto.randomUUID(),
+                              type: "webhook",
+                              enabled: true,
+                              config: {
+                                method: "POST",
+                                url: "",
+                                headers: { "Content-Type": "application/json" },
+                              },
+                            };
+                            updateStage({
+                              events: [...(stage.events || []), newEvent],
+                            });
+                          }}
+                          className="text-[10px] font-semibold text-emerald-600 hover:text-emerald-700"
                         >
-                          <div className="flex items-center justify-between text-xs uppercase tracking-wide text-slate-500">
-                            <span>Stage {index + 1}</span>
-                            <span className="flex items-center gap-2">
-                              {statusLabel}
-                              {isFinal ? (
-                                <span className="rounded-full border border-emerald-200 px-2 py-0.5 text-[10px] font-semibold text-emerald-600">
-                                  Final
-                                </span>
-                              ) : null}
-                            </span>
-                          </div>
-                          <div className="text-sm font-semibold text-slate-800">
-                            {stage.name}
-                          </div>
-                          <p className="text-xs text-slate-500">
-                            {userMap[stage.actorUserId]?.name ?? "Unassigned"} ·{" "}
-                            {userMap[stage.actorUserId]?.role ?? "Role pending"}
-                          </p>
-                          {isActive ? (
-                            <p className="mt-2 text-[10px] font-semibold uppercase tracking-wide text-emerald-600">
-                              Selected
-                            </p>
-                          ) : null}
+                          + Add Event
                         </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
+                      </div>
+
+                      {(stage.events || []).map((event: StageEvent, index: number) => (
+                        <div key={event.id} className="space-y-3 rounded-lg border border-slate-200 bg-white p-3">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <select
+                                value={event.type}
+                                onChange={(e) => {
+                                  const newEvents = [...(stage.events || [])];
+                                  newEvents[index] = {
+                                    ...event,
+                                    type: e.target.value as "webhook" | "kafka",
+                                    config: e.target.value === "kafka"
+                                      ? { topic: "" }
+                                      : { method: "POST", url: "" }
+                                  };
+                                  updateStage({ events: newEvents });
+                                }}
+                                className="rounded border border-slate-200 px-2 py-1 text-xs"
+                              >
+                                <option value="webhook">Webhook</option>
+                                <option value="kafka">Kafka</option>
+                              </select>
+                              <label className="flex items-center gap-1 text-[10px] text-slate-500">
+                                <input
+                                  type="checkbox"
+                                  checked={event.enabled}
+                                  onChange={(e) => {
+                                    const newEvents = [...(stage.events || [])];
+                                    newEvents[index] = { ...event, enabled: e.target.checked };
+                                    updateStage({ events: newEvents });
+                                  }}
+                                  className="h-3 w-3 rounded border-slate-300"
+                                />
+                                Enabled
+                              </label>
+                            </div>
+                            <button
+                              onClick={() => {
+                                const newEvents = (stage.events || []).filter((_: StageEvent, i: number) => i !== index);
+                                updateStage({ events: newEvents });
+                              }}
+                              className="text-[10px] text-rose-500 hover:text-rose-600"
+                            >
+                              Remove
+                            </button>
+                          </div>
+
+                          {event.type === "webhook" && (
+                            <div className="space-y-2">
+                              <div className="flex gap-2">
+                                <select
+                                  value={event.config.method}
+                                  onChange={(e) => {
+                                    const newEvents = [...(stage.events || [])];
+                                    newEvents[index].config.method = e.target.value as "GET" | "POST" | "PUT" | "PATCH";
+                                    updateStage({ events: newEvents });
+                                  }}
+                                  className="w-20 rounded border border-slate-200 px-2 py-1 text-xs"
+                                >
+                                  <option value="POST">POST</option>
+                                  <option value="PUT">PUT</option>
+                                  <option value="GET">GET</option>
+                                </select>
+                                <input
+                                  type="text"
+                                  placeholder="https://api.example.com/webhook"
+                                  value={event.config.url || ""}
+                                  onChange={(e) => {
+                                    const newEvents = [...(stage.events || [])];
+                                    newEvents[index].config.url = e.target.value;
+                                    updateStage({ events: newEvents });
+                                  }}
+                                  className="flex-1 rounded border border-slate-200 px-2 py-1 text-xs"
+                                />
+                              </div>
+                            </div>
+                          )}
+
+                          {event.type === "kafka" && (
+                            <div className="space-y-2">
+                              <input
+                                type="text"
+                                placeholder="Topic Name"
+                                value={event.config.topic || ""}
+                                onChange={(e) => {
+                                  const newEvents = [...(stage.events || [])];
+                                  newEvents[index].config.topic = e.target.value;
+                                  updateStage({ events: newEvents });
+                                }}
+                                className="w-full rounded border border-slate-200 px-2 py-1 text-xs"
+                              />
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           </div>
         </div>
-      ) : null}
+      )}
 
-      {isJsonModalOpen ? (
+      {/* JSON Preview Modal */}
+      {isJsonModalOpen && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 px-4"
           onClick={() => setIsJsonModalOpen(false)}
         >
           <div
-            className="relative w-full max-w-4xl bg-slate-950 text-slate-100 shadow-2xl"
+            className="relative flex max-h-[90vh] w-full max-w-6xl flex-col bg-slate-950 text-slate-100 shadow-2xl"
             onClick={(event) => event.stopPropagation()}
           >
             <header className="flex flex-col gap-2 border-b border-white/10 px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
@@ -1794,12 +1170,83 @@ export function RuleBuilder({
                 </button>
               </div>
             </header>
-            <pre className="max-h-[500px] overflow-auto px-6 py-5 text-xs">
-{previewJson}
+            <pre className="flex-1 overflow-auto px-6 py-5 text-xs font-mono">
+              {previewJson}
             </pre>
           </div>
         </div>
-      ) : null}
+      )}
+
+      {/* Transition Editor Modal */}
+      {isTransitionModalOpen && selectedEdgeId && (() => {
+        const edge = edges.find((e) => e.id === selectedEdgeId);
+        if (!edge) return null;
+
+        const sourceNode = nodes.find((n) => n.id === edge.source);
+        const targetNode = nodes.find((n) => n.id === edge.target);
+
+        return (
+          <TransitionEditor
+            edgeId={selectedEdgeId}
+            sourceLabel={sourceNode?.data.label || 'Source'}
+            targetLabel={targetNode?.data.label || 'Target'}
+            conditionGroups={edgeConditions[selectedEdgeId]?.conditionGroups}
+            isDefault={edgeConditions[selectedEdgeId]?.isDefault}
+            onSave={handleConditionSave}
+            onClose={() => setIsTransitionModalOpen(false)}
+          />
+        );
+      })()}
+
+      {/* Alert Modal */}
+      {alertModal.isOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 px-4"
+          onClick={() => setAlertModal({ ...alertModal, isOpen: false })}
+        >
+          <div
+            className="relative w-full max-w-md rounded-lg bg-white shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-6">
+              <div className="mb-4 flex items-center gap-3">
+                {alertModal.type === 'success' && (
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-100">
+                    <svg className="h-6 w-6 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                  </div>
+                )}
+                {alertModal.type === 'error' && (
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-red-100">
+                    <svg className="h-6 w-6 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </div>
+                )}
+                {alertModal.type === 'warning' && (
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-amber-100">
+                    <svg className="h-6 w-6 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                  </div>
+                )}
+                <h3 className="text-lg font-semibold text-slate-900">{alertModal.title}</h3>
+              </div>
+              <p className="mb-6 whitespace-pre-line text-sm text-slate-600">{alertModal.message}</p>
+              <div className="flex justify-end">
+                <button
+                  onClick={() => setAlertModal({ ...alertModal, isOpen: false })}
+                  className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
+

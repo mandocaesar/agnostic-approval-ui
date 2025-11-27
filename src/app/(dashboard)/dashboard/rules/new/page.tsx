@@ -1,38 +1,63 @@
 import Link from "next/link";
-import { readData } from "@/lib/dataStore";
+import { prisma } from "@/lib/prisma";
 import { PageHeaderMount } from "@/components/page-header";
-import { RuleBuilder } from "@/components/rule-builder";
+import { RuleBuilderClient } from "@/components/rule-builder-client";
 import type { ApprovalFlow, Domain } from "@/types";
 
 interface NewRulePageProps {
   searchParams: {
     flowId?: string;
+    domainId?: string;
+    subdomainId?: string;
   };
 }
 
-function findFlowContext(domains: Domain[], flowId: string | undefined) {
+async function findFlowContext(flowId: string | undefined) {
   if (!flowId) {
     return null;
   }
-  for (const domain of domains) {
-    for (const subdomain of domain.subdomains) {
-      const flow = subdomain.flows.find((item) => item.id === flowId);
-      if (flow) {
-        return { flow, domain, subdomain } as {
-          flow: ApprovalFlow;
-          domain: Domain;
-          subdomain: Domain["subdomains"][number];
-        };
-      }
-    }
+  
+  const flow = await prisma.approvalFlow.findUnique({
+    where: { id: flowId },
+    include: {
+      subdomain: {
+        include: {
+          domain: true,
+        },
+      },
+    },
+  });
+
+  if (!flow) {
+    return null;
   }
-  return null;
+
+  return {
+    flow: flow as any,
+    domain: flow.subdomain.domain as any,
+    subdomain: flow.subdomain as any,
+  };
 }
 
 export default async function NewRulePage({ searchParams }: NewRulePageProps) {
-  const data = await readData();
-  const flowContext = findFlowContext(data.domains, searchParams.flowId);
+  const { flowId, domainId, subdomainId } = await searchParams;
+  
+  const [users, domains] = await Promise.all([
+    prisma.user.findMany(),
+    prisma.domain.findMany({
+      include: { subdomains: true },
+    }),
+  ]);
+
+  // Find flow context if editing existing flow
+  const flowContext = flowId ? await findFlowContext(flowId) : null;
   const isEditing = Boolean(flowContext);
+
+  // Get selected domain and subdomain if provided
+  const selectedDomain = domainId ? domains.find(d => d.id === domainId) : null;
+  const selectedSubdomain = subdomainId && selectedDomain 
+    ? selectedDomain.subdomains.find(s => s.id === subdomainId) 
+    : null;
 
   return (
     <>
@@ -53,11 +78,13 @@ export default async function NewRulePage({ searchParams }: NewRulePageProps) {
           </Link>
         }
       />
-      <RuleBuilder
+      <RuleBuilderClient
         key={flowContext?.flow.id ?? "create"}
-        users={data.users}
-        domains={data.domains}
+        users={users as any}
+        domains={domains as any}
         initialFlowContext={flowContext ?? undefined}
+        selectedDomainId={domainId}
+        selectedSubdomainId={subdomainId}
       />
     </>
   );
