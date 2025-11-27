@@ -9,13 +9,21 @@ datasource db {
   provider = "postgresql"
 }
 
+enum Role {
+  SUPER_ADMIN
+  DOMAIN_ADMIN
+  MAKER
+  CHECKER
+}
+
 model User {
   id            String    @id @default(uuid())
   name          String?
   email         String    @unique
   emailVerified DateTime?
   image         String?
-  role          String    @default("User")
+  password      String?   // For Super Admin login
+  role          Role      @default(MAKER)
   supervisorId  String?
   
   // Auth relations

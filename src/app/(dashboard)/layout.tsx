@@ -8,7 +8,15 @@ export default async function DashboardLayout({
 }: {
   children: ReactNode;
 }) {
-  const session = await auth();
+  let session;
+  
+  try {
+    session = await auth();
+  } catch (error) {
+    // Handle invalid/expired JWT tokens
+    console.error("Auth error:", error);
+    session = null;
+  }
   
   if (!session?.user) {
     redirect("/login");
