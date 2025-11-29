@@ -14,6 +14,9 @@ import {
   PageHeaderText,
 } from "@/components/page-header";
 import { SignOutButton } from "@/components/sign-out-button";
+import { ToastContainer } from "@/components/ui/toast";
+import { ConfirmationDialog } from "@/components/ui/confirmation-dialog";
+import { ErrorBoundary } from "@/components/error-boundary";
 import type { User } from "next-auth";
 
 const NAV_ITEMS: NavItem[] = [
@@ -153,10 +156,14 @@ export default function DashboardLayoutClient({
           </header>
           <main className="flex flex-1 flex-col overflow-hidden">
             <div className="flex flex-1 flex-col gap-6 overflow-y-auto">
-              {children}
+              <ErrorBoundary>{children}</ErrorBoundary>
             </div>
           </main>
         </div>
+
+        {/* Global UI Components */}
+        <ToastContainer />
+        <ConfirmationDialog />
       </div>
     </PageHeaderProvider>
   );
